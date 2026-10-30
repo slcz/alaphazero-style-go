@@ -120,9 +120,12 @@ class FP8Linear(nn.Module):
         shape = x.shape
         x2 = x.reshape(-1, shape[-1])
         if x2.is_cuda:
-            sx = (448.0 / x2.abs().amax().clamp(min=1e-12)).float()
-            xq = (x2 * sx).clamp(-448, 448).to(torch.float8_e4m3fn)
-            y = torch._scaled_mm(xq, self.wq.t(), scale_a=sx,
+            # _scaled_mm applies scale_a/scale_b as DEQUANT multipliers:
+            # out = (mat1 @ mat2) * scale_a * scale_b — so both scales are
+            # amax/448 (E4M3 max), matching the weight quantization
+            sa = (x2.abs().amax() / 448.0).clamp(min=1e-12).float()
+            xq = (x2 / sa).clamp(-448, 448).to(torch.float8_e4m3fn)
+            y = torch._scaled_mm(xq, self.wq.t(), scale_a=sa,
                                  scale_b=self.scale,
                                  out_dtype=torch.bfloat16,
                                  use_fast_accum=True)
