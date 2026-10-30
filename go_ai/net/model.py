@@ -57,6 +57,7 @@ class NetConfig:
                               # pairs buy near-origin resolution (adjacent
                               # points), the long ones stay alias-free at 19
     rope_lambda: float = 8.0
+    fp8: bool = False         # E4M3 weight quantization (inference)
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +99,68 @@ def apply_rope(x: torch.Tensor, b: int, pairs: int, lam0: float) -> torch.Tensor
         cb, sb = cos[:, m * p:(m + 1) * p], sin[:, m * p:(m + 1) * p]
         banks.append(torch.cat([x1 * cb - x2 * sb, x2 * cb + x1 * sb], dim=-1))
     return torch.cat(banks + [x[..., 4 * p:]], dim=-1)
+
+
+class FP8Linear(nn.Module):
+    """E4M3 weight-quantized linear: weights carry one per-tensor scale;
+    activations are quantized dynamically per call. CUDA computes through
+    _scaled_mm (tensor-core FP8); elsewhere a dequantized matmul runs as
+    the reference path (tests, MPS)."""
+
+    def __init__(self, linear: nn.Linear):
+        super().__init__()
+        w = linear.weight.data.float()
+        self.scale = nn.Buffer((w.abs().amax() / 448.0).clamp(min=1e-12))
+        self.wq = nn.Buffer((w / self.scale).clamp(-448, 448)
+                            .to(torch.float8_e4m3fn))
+        self.bias = (nn.Parameter(linear.bias.data.clone())
+                     if linear.bias is not None else None)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        shape = x.shape
+        x2 = x.reshape(-1, shape[-1])
+        if x2.is_cuda:
+            sx = (448.0 / x2.abs().amax().clamp(min=1e-12)).float()
+            xq = (x2 * sx).clamp(-448, 448).to(torch.float8_e4m3fn)
+            y = torch._scaled_mm(xq, self.wq.t(), scale_a=sx,
+                                 scale_b=self.scale,
+                                 out_dtype=torch.bfloat16,
+                                 use_fast_accum=True)
+        else:
+            w = self.wq.to(x.dtype) * self.scale.to(x.dtype)
+            y = x2 @ w.t()
+        return y.reshape(*shape[:-1], -1) + self.bias
+
+
+class FP8Conv1x1(nn.Module):
+    """1x1 conv as an FP8 GEMM — same [B,C,H,W] contract as the Conv2d
+    it replaces; the depthwise 3x3 between them stays bf16."""
+
+    def __init__(self, conv: nn.Conv2d):
+        super().__init__()
+        fake = nn.Linear(conv.in_channels, conv.out_channels)
+        with torch.no_grad():
+            fake.weight.copy_(conv.weight.squeeze(-1).squeeze(-1))
+            if conv.bias is not None:
+                fake.bias.copy_(conv.bias)
+        self.lin = FP8Linear(fake)
+
+    def forward(self, h: torch.Tensor) -> torch.Tensor:
+        B, C, H, W = h.shape
+        y = self.lin(h.permute(0, 2, 3, 1))
+        return y.permute(0, 3, 1, 2).contiguous()
+
+
+def to_fp8_(root: nn.Module) -> None:
+    """Quantize every Linear and 1x1 Conv2d under root to E4M3 weights;
+    depthwise convs and norms stay as-is."""
+    for name, child in root.named_children():
+        if isinstance(child, nn.Linear):
+            setattr(root, name, FP8Linear(child))
+        elif isinstance(child, nn.Conv2d) and child.kernel_size == (1, 1):
+            setattr(root, name, FP8Conv1x1(child))
+        else:
+            to_fp8_(child)
 
 
 class RopeAttention(nn.Module):
@@ -275,6 +338,8 @@ class GoNet(nn.Module):
         self.own = OwnershipHead(cfg.d_model)
         self.score = ScoreHead(cfg.d_model)
         self.aux = PolicyHead(cfg.d_model) if cfg.aux_reply else None
+        if cfg.fp8:
+            to_fp8_(self)
 
     def trunk(self, tokens: torch.Tensor) -> torch.Tensor:
         x = self.input_proj(tokens)

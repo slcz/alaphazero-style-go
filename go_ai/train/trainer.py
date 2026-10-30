@@ -283,9 +283,9 @@ class Trainer:
             model = GoNet(NetConfig(**payload["net_config"]))
         model.load_state_dict(payload["model"], strict=strict)
         trainer = cls(model, cfg)
-        if strict:
+        if strict and payload.get("optimizer"):
             trainer.opt.load_state_dict(payload["optimizer"])
-        else:
+        elif strict:
             print("[trainer] optimizer state not restored (new params)")
         trainer.steps = payload["steps"]
         return trainer
