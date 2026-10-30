@@ -150,9 +150,12 @@ class FP8Conv1x1(nn.Module):
         self.lin = FP8Linear(fake)
 
     def forward(self, h: torch.Tensor) -> torch.Tensor:
-        B, C, H, W = h.shape
-        y = self.lin(h.permute(0, 2, 3, 1))
-        return y.permute(0, 3, 1, 2).contiguous()
+        wdq = getattr(self, "_wdq", None)
+        if wdq is None or wdq.device != h.device:
+            wdq = (self.lin.wq.float() * self.lin.scale
+                   ).reshape(self.lin.bias.shape + (1, 1)).to(torch.bfloat16)
+            object.__setattr__(self, "_wdq", wdq)   # cache only
+        return F.conv2d(h, wdq, self.lin.bias)
 
 
 def to_fp8_(root: nn.Module) -> None:
