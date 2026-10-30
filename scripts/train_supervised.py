@@ -136,6 +136,11 @@ def main() -> int:
 
     p0, v0 = eval_val(trainer, val_games, val_rows, rng, n=args.val_n)
     print(f"val BEFORE: policy top1 {p0:.3f}  value {v0:.3f}", flush=True)
+    # constant LR thrashes on this loss (observed: val top-1 peaks then
+    # slides while train loss oscillates); cosine to zero fixes the tail
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(
+        trainer.opt, T_max=args.steps)
+
     history = []
     for step in range(1, args.steps + 1):
         pick = rng.integers(0, len(train_rows), size=args.batch)
@@ -150,6 +155,7 @@ def main() -> int:
             for k, v in s.items():
                 batch[k][j] = v
         m = trainer.train_step(tensors_to_torch(batch, trainer.device))
+        sched.step()
         history.append(m)
         if step % args.val_every == 0 or step == args.steps:
             p1, v1 = eval_val(trainer, val_games, val_rows, rng,
