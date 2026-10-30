@@ -67,20 +67,29 @@ class NetConfig:
 _rope_cache: dict = {}
 
 
-def _rope_tables(b: int, pairs: int, lam0: float, device, dtype):
-    key = (b, pairs, lam0, str(device), dtype)
+def _rope_tables(b: int, pairs: int, lam0: float, device, dtype, d_head: int):
+    """Full-width tables [b*b, d_head]: cos/sin per dim; passthrough dims
+    carry (1, 0). Within a bank the sign is folded into sin so the
+    rotation reduces to x·cos + roll(x)·sin (no cat, no per-pair loop)."""
+    key = (b, pairs, lam0, str(device), dtype, d_head)
     t = _rope_cache.get(key)
     if t is None:
         idx = torch.arange(b * b, device=device, dtype=torch.float64)
-        x = idx % b
-        y = idx // b
+        x, y = idx % b, idx // b
         theta = 2 * math.pi / (lam0 * 2.0 ** torch.arange(pairs,
                                                           device=device))
-        # [b*b, 2*pairs]: x bank then y bank
         ang = torch.cat(
             [x[:, None] * theta[None, :], y[:, None] * theta[None, :]],
-            dim=1)
-        t = (ang.cos().to(dtype), ang.sin().to(dtype))
+            dim=1)                                     # [T, 2p]
+        c = torch.ones(b * b, d_head, device=device, dtype=torch.float64)
+        s = torch.zeros(b * b, d_head, device=device, dtype=torch.float64)
+        p = pairs
+        for m in (0, 1):                               # build-time only
+            a = ang[:, m * p:(m + 1) * p]
+            sl = slice(m * 2 * p, m * 2 * p + 2 * p)
+            c[:, sl] = torch.cat([a.cos(), a.cos()], dim=1)
+            s[:, sl] = torch.cat([-a.sin(), a.sin()], dim=1)
+        t = (c.to(dtype), s.to(dtype))
         _rope_cache[key] = t
     return t
 
@@ -91,14 +100,15 @@ def apply_rope(x: torch.Tensor, b: int, pairs: int, lam0: float) -> torch.Tensor
     the rest is unrotated content. q and k use the same tables."""
     assert 4 * pairs <= x.shape[-1], "axial RoPE needs 4·pairs ≤ d_head"
     p = pairs
-    cos, sin = _rope_tables(b, p, lam0, x.device, x.dtype)
-    banks = []
-    for m in range(2):
-        xb = x[..., m * 2 * p:(m + 1) * 2 * p]
-        x1, x2 = xb.chunk(2, dim=-1)
-        cb, sb = cos[:, m * p:(m + 1) * p], sin[:, m * p:(m + 1) * p]
-        banks.append(torch.cat([x1 * cb - x2 * sb, x2 * cb + x1 * sb], dim=-1))
-    return torch.cat(banks + [x[..., 4 * p:]], dim=-1)
+    cos, sin = _rope_tables(b, p, lam0, x.device, x.dtype, x.shape[-1])
+    # out = x·cos + roll_within_bank(x)·sin — 4-5 kernels total; the two
+    # banks form a (2, 2p) view so one roll rotates each independently
+    out = x * cos
+    x4 = x[..., :4 * p].unflatten(-1, (2, 2 * p))
+    out[..., :4 * p] += (x4.roll(p, dims=-1)
+                         * sin[..., :4 * p].unflatten(-1, (2, 2 * p))
+                         ).flatten(-2)
+    return out
 
 
 class FP8Linear(nn.Module):

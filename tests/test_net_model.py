@@ -173,3 +173,49 @@ def test_fp8_static_calibration(tmp_path):
     net2 = GoNet(NetConfig(**net.cfg.__dict__))
     net2.load_state_dict(torch.load(p, weights_only=False)["model"])
     assert net2.blocks[0].attn.qkv.use_static
+
+
+def test_rope_fused_matches_reference():
+    """The fused rotation must equal the original per-bank loop exactly."""
+    import math
+    from go_ai.net.model import _rope_tables, apply_rope
+
+    def ref(x, b, pairs, lam0):
+        cos, sin = _rope_tables(b, pairs, lam0, x.device, x.dtype,
+                                x.shape[-1])
+        p = pairs
+        out = x * cos
+        x4 = x[..., :4 * p].unflatten(-1, (2, 2 * p))
+        out[..., :4 * p] += (x4.roll(p, dims=-1)
+                             * sin[..., :4 * p].unflatten(-1, (2, 2 * p))
+                             ).flatten(-2)
+        return out
+
+    def old(x, b, pairs, lam0):
+        cos, sin = _rope_tables_old(b, pairs, lam0, x.device, x.dtype)
+        p = pairs
+        banks = []
+        for m in range(2):
+            xb = x[..., m * 2 * p:(m + 1) * 2 * p]
+            x1, x2 = xb.chunk(2, dim=-1)
+            cb = cos[:, m * p:(m + 1) * p]
+            sb = sin[:, m * p:(m + 1) * p]
+            banks.append(torch.cat([x1 * cb - x2 * sb,
+                                    x2 * cb + x1 * sb], dim=-1))
+        return torch.cat(banks + [x[..., 4 * p:]], dim=-1)
+
+    def _rope_tables_old(b, pairs, lam0, device, dtype):
+        idx = torch.arange(b * b, device=device, dtype=torch.float64)
+        xx, yy = idx % b, idx // b
+        theta = 2 * math.pi / (lam0 * 2.0 ** torch.arange(pairs,
+                                                          device=device))
+        ang = torch.cat([xx[:, None] * theta[None, :],
+                         yy[:, None] * theta[None, :]], dim=1)
+        return (ang.cos().to(dtype), ang.sin().to(dtype))
+
+    torch.manual_seed(1)
+    for pairs in (2, 4):
+        x = torch.randn(2, 4, 49, 32)
+        d = (apply_rope(x, 7, pairs, 8.0)
+             - old(x, 7, pairs, 8.0)).abs().max()
+        assert d < 1e-5, f"pairs={pairs} rope mismatch {d:.2e}"

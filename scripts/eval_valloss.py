@@ -86,7 +86,7 @@ def main() -> int:
     wall = time.time() - t0
     gpu = ev0.elapsed_time(ev1) / 1e3
     n = agg["n"]
-    gflop = 16.6e9                      # forward, per sample (see design)
+    gflop = 6.01e9                      # 16.65 MFLOPs/token x 361
     print(f"policy CE {agg['pol']/n:.4f} nats  (ppl {np.exp(agg['pol']/n):.2f})  "
           f"top1 {agg['t1']/n:.4f}  top5 {agg['t5']/n:.4f}")
     print(f"value   CE {agg['val']/n:.4f} nats  acc {agg['vacc']/n:.4f}")
