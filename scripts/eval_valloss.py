@@ -27,6 +27,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("ckpt")
     ap.add_argument("--n", type=int, default=8192)
+    ap.add_argument("--batch", type=int, default=512)
     ap.add_argument("--seed", type=int, default=1)
     a = ap.parse_args()
 
@@ -40,7 +41,7 @@ def main() -> int:
     tr = Trainer.load(a.ckpt, device="cuda")
     rng = np.random.default_rng(a.seed + 7)
     pick = rng.permutation(len(val_rows))[:a.n]
-    B = 512
+    B = a.batch
 
     # build all batches first so the timed loop measures pure forward
     batches = []
