@@ -56,7 +56,7 @@ $(BUILD)/test_puct: src/go_rules.c src/nn_encode.c src/rng.c src/puct.c \
                     tests/test_puct.c include/go.h include/go_nn.h \
                     include/go_rng.h include/go_puct.h | $(BUILD)
 	$(CC) $(CFLAGS) $(INC) -o $@ src/go_rules.c src/nn_encode.c src/rng.c \
-	       src/puct.c tests/test_puct.c -pthread
+	       src/puct.c tests/test_puct.c -pthread -lm
 
 $(BUILD)/test_selfplay_e2e: src/go_rules.c tests/test_selfplay_e2e.c \
                             include/go.h include/go_sp_dump.h | $(BUILD)
@@ -67,7 +67,7 @@ $(BUILD)/selfplay: src/selfplay.c src/match_util.c src/nn_stub.c src/sp_dump.c \
                    include/go_puct.h include/go_match.h include/go_nn_eval.h \
                    include/go_sp_dump.h | $(BUILD)
 	$(CC) $(CFLAGS) $(INC) -o $@ src/selfplay.c src/match_util.c \
-	       src/nn_stub.c src/sp_dump.c $(CORE) -pthread
+	       src/nn_stub.c src/sp_dump.c $(CORE) -pthread -lm
 
 $(BUILD)/libgo.dylib: $(LIBSRC) include/go.h include/go_nn.h include/go_ffi.h | $(BUILD)
 	$(CC) $(CFLAGS) $(INC) -shared -fPIC -o $@ $(LIBSRC)
