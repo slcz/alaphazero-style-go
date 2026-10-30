@@ -101,6 +101,8 @@ def main() -> int:
                     help="threads for sample prep (C calls release the GIL)")
     ap.add_argument("--micro", type=int, default=0,
                     help="grad-accumulation chunk size (0 = whole batch)")
+    ap.add_argument("--no-compile", action="store_true",
+                    help="run eager (skip torch.compile)")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--json", default=None)
     args = ap.parse_args()
@@ -127,7 +129,7 @@ def main() -> int:
                       score_cdf_weight=0.0,
                       value_weight=0.0 if args.no_value else 1.0,
                       aux_reply_weight=0.0 if args.no_aux else 0.15,
-                      grad_clip=1.0)
+                      grad_clip=1.0, compile=not args.no_compile)
     if args.base_ckpt and Path(args.base_ckpt).exists():
         trainer = Trainer.load(args.base_ckpt, device=args.device)
         print(f"base: {args.base_ckpt}")
@@ -153,16 +155,19 @@ def main() -> int:
         gi, i = train_rows[pick[j]]
         return SD.supervised_sample(train_games[gi], i, int(syms[j]))
 
-    with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        for step in range(1, args.steps + 1):
-            pick = rng.integers(0, len(train_rows), size=args.batch)
-            syms = rng.integers(0, 8, size=args.batch)
+    pool = (ThreadPoolExecutor(max_workers=args.workers)
+            if args.workers > 1 else None)
+    for step in range(1, args.steps + 1):
+        pick = rng.integers(0, len(train_rows), size=args.batch)
+        syms = rng.integers(0, 8, size=args.batch)
+        if pool:                     # serial prep is ~0.3 s at batch 2048;
             samples = list(pool.map(one_sample, range(args.batch)))
-            batch = {k: np.stack([s[k] for s in samples])
-                     for k in samples[0]}
-            m = trainer.train_step(tensors_to_torch(batch, trainer.device),
-                                   micro=args.micro)
-            sched.step()
+        else:                        # the pool itself deadlocks under cffi
+            samples = [one_sample(j) for j in range(args.batch)]
+        batch = {k: np.stack([s[k] for s in samples]) for k in samples[0]}
+        m = trainer.train_step(tensors_to_torch(batch, trainer.device),
+                               micro=args.micro)
+        sched.step()
         history.append(m)
         if step % args.val_every == 0 or step == args.steps:
             p1, v1 = eval_val(trainer, val_games, val_rows, rng,
