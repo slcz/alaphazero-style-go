@@ -74,22 +74,24 @@ def _rope_tables(b: int, pairs: int, lam0: float, device, dtype, d_head: int):
     key = (b, pairs, lam0, str(device), dtype, d_head)
     t = _rope_cache.get(key)
     if t is None:
-        idx = torch.arange(b * b, device=device, dtype=torch.float64)
+        # built on CPU in float64 (exact); MPS has no float64 — the
+        # tables are tiny and cached, the move is free
+        idx = torch.arange(b * b, dtype=torch.float64)
         x, y = idx % b, idx // b
-        theta = 2 * math.pi / (lam0 * 2.0 ** torch.arange(pairs,
-                                                          device=device))
+        theta = 2 * math.pi / (lam0 * 2.0 ** torch.arange(pairs))
         ang = torch.cat(
             [x[:, None] * theta[None, :], y[:, None] * theta[None, :]],
             dim=1)                                     # [T, 2p]
-        c = torch.ones(b * b, d_head, device=device, dtype=torch.float64)
-        s = torch.zeros(b * b, d_head, device=device, dtype=torch.float64)
+        c = torch.ones(b * b, d_head, dtype=torch.float64)
+        s = torch.zeros(b * b, d_head, dtype=torch.float64)
         p = pairs
         for m in (0, 1):                               # build-time only
             a = ang[:, m * p:(m + 1) * p]
             sl = slice(m * 2 * p, m * 2 * p + 2 * p)
             c[:, sl] = torch.cat([a.cos(), a.cos()], dim=1)
             s[:, sl] = torch.cat([-a.sin(), a.sin()], dim=1)
-        t = (c.to(dtype), s.to(dtype))
+        t = (c.to(device=device, dtype=dtype),
+             s.to(device=device, dtype=dtype))
         _rope_cache[key] = t
     return t
 
@@ -164,6 +166,27 @@ def to_fp8_(root: nn.Module) -> None:
                 setattr(root, name, FP8Linear(child))
         else:
             to_fp8_(child)
+
+
+def to_half_(root: nn.Module) -> None:
+    """Replace FP8Linears with plain fp16 Linears (dequantized once).
+    Non-CUDA targets (MPS) cannot hold the fp8 dtype at all, and MPS
+    bf16 matmul asserts on the fused bias — fp16 is the stable fast
+    path (same 2x rate). Conversion happens on CPU at load time."""
+
+    def conv(m: FP8Linear) -> nn.Linear:
+        lin = nn.Linear(m.wq.shape[1], m.wq.shape[0], bias=m.bias is not None)
+        with torch.no_grad():
+            lin.weight.data = (m.wq.float() * m.scale).to(torch.float16)
+            if m.bias is not None:
+                lin.bias.data = m.bias.data
+        return lin
+
+    for name, child in root.named_children():
+        if isinstance(child, FP8Linear):
+            setattr(root, name, conv(child))
+        else:
+            to_half_(child)
 
 
 class RopeAttention(nn.Module):

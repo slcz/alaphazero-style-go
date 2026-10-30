@@ -76,14 +76,16 @@ def setup(ckpt: str, device: str, rows: int, banks: int = 1) -> dict:
             # the MAX stride: the active board size is sliced per batch
             # (GTP boardsize may change between pushes)
             s["xd"] = torch.empty(rows, NN_TOKENS, NN_TOKEN_DIM,
-                                  device=device)
+                                  device=device,
+                                  dtype=next(model.parameters()).dtype)
             s["md"] = torch.empty(rows, NN_POLICY, dtype=torch.bool,
                                   device=device)
             s["polf"] = torch.empty(rows, NN_POLICY, device=device)
             s["wdlf"] = torch.empty(rows, 2, device=device)
         else:
             s["xd"] = torch.empty(rows, NN_TOKENS, NN_TOKEN_DIM,
-                                  device=device)
+                                  device=device,
+                                  dtype=next(model.parameters()).dtype)
             s["md"] = torch.empty(rows, NN_POLICY, dtype=torch.bool,
                                   device=device)
         sets.append(s)
@@ -117,12 +119,7 @@ def push(bank: int, n: int) -> int:
         with torch.inference_mode():
             s["xd"][:n, :T].copy_(s["x"][:n, :T])
             s["md"][:n, :b * b + 1].copy_(s["m"][:n, :b * b + 1])
-            if _S["bf16"] and torch.device(_S["device"]).type == "mps":
-                with torch.autocast("mps", dtype=torch.bfloat16):
-                    out = _S["model"](s["xd"][:n, :T],
-                                      s["md"][:n, :b * b + 1])
-            else:
-                out = _S["model"](s["xd"][:n, :T], s["md"][:n, :b * b + 1])
+            out = _S["model"](s["xd"][:n, :T], s["md"][:n, :b * b + 1])
             s["lp"][:n].zero_()                  # tail stays 0 for C
             s["lp"][:n, :b * b + 1].copy_(out["policy_logp"].cpu())
             s["w"][:n] = torch.softmax(out["wdl"], dim=-1).cpu()

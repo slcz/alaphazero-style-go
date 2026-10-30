@@ -26,7 +26,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from go_ai.net.model import GoNet, NetConfig
+from go_ai.net.model import GoNet, NetConfig, to_half_
 
 
 @dataclass
@@ -286,6 +286,12 @@ class Trainer:
                   and k.endswith(("ff.up.weight", "ff.down.weight")) else v)
               for k, v in payload["model"].items()}
         model.load_state_dict(sd, strict=strict)
+        # fp8 tensors cannot move to MPS/CPU backends — ship them bf16:
+        # dequantize the FP8 linears and run the whole network bf16
+        if payload["net_config"].get("fp8") \
+                and torch.device(cfg.device).type != "cuda":
+            to_half_(model)
+            model.to(torch.float16)
         trainer = cls(model, cfg)
         if strict and payload.get("optimizer"):
             trainer.opt.load_state_dict(payload["optimizer"])
