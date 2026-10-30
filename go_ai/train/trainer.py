@@ -281,7 +281,11 @@ class Trainer:
                                # require a build toolchain
         if model is None:
             model = GoNet(NetConfig(**payload["net_config"]))
-        model.load_state_dict(payload["model"], strict=strict)
+        # pre-MLP checkpoints stored ff up/down as 1x1-conv [out,in,1,1]
+        sd = {k: (v.squeeze(-1).squeeze(-1) if v.dim() == 4
+                  and k.endswith(("ff.up.weight", "ff.down.weight")) else v)
+              for k, v in payload["model"].items()}
+        model.load_state_dict(sd, strict=strict)
         trainer = cls(model, cfg)
         if strict and payload.get("optimizer"):
             trainer.opt.load_state_dict(payload["optimizer"])

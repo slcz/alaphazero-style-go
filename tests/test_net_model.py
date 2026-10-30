@@ -126,3 +126,24 @@ def test_fp8_gonet_roundtrip(tmp_path):
     mask = torch.ones(2, 50, dtype=torch.bool)
     out = net2(tok, mask, mask)
     assert out["policy_logp"].shape == (2, 50)
+
+
+def test_legacy_conv_ffn_ckpt_loads(tmp_path):
+    """Pre-MLP checkpoints stored ff up/down as [out,in,1,1]; the load
+    shim squeezes them into the Linear weights (outputs identical)."""
+    from go_ai.train.trainer import Trainer, TrainConfig
+    torch.manual_seed(3)
+    tr = Trainer(GoNet(TINY), TrainConfig(device="cpu", compile=False))
+    tr.save(tmp_path / "a.pt")
+    payload = torch.load(tmp_path / "a.pt", weights_only=False)
+    for k in ("ff.up.weight", "ff.down.weight"):
+        for i in range(TINY.n_layers):
+            payload["model"][f"blocks.{i}.{k}"] = \
+                payload["model"][f"blocks.{i}.{k}"].unsqueeze(-1).unsqueeze(-1)
+    torch.save(payload, tmp_path / "legacy.pt")
+
+    tok = torch.randn(2, 49, TINY.token_dim)
+    mask = torch.ones(2, 50, dtype=torch.bool)
+    a = Trainer.load(tmp_path / "a.pt", device="cpu").model(tok, mask, mask)
+    b = Trainer.load(tmp_path / "legacy.pt", device="cpu").model(tok, mask, mask)
+    assert (a["policy_logp"] - b["policy_logp"]).abs().max() < 1e-5

@@ -136,39 +136,14 @@ class FP8Linear(nn.Module):
         return y.reshape(*shape[:-1], -1) + self.bias
 
 
-class FP8Conv1x1(nn.Module):
-    """1x1 conv as an FP8 GEMM — same [B,C,H,W] contract as the Conv2d
-    it replaces; the depthwise 3x3 between them stays bf16."""
-
-    def __init__(self, conv: nn.Conv2d):
-        super().__init__()
-        fake = nn.Linear(conv.in_channels, conv.out_channels)
-        with torch.no_grad():
-            fake.weight.copy_(conv.weight.squeeze(-1).squeeze(-1))
-            if conv.bias is not None:
-                fake.bias.copy_(conv.bias)
-        self.lin = FP8Linear(fake)
-
-    def forward(self, h: torch.Tensor) -> torch.Tensor:
-        wdq = getattr(self, "_wdq", None)
-        if wdq is None or wdq.device != h.device:
-            wdq = (self.lin.wq.float() * self.lin.scale
-                   ).unsqueeze(-1).unsqueeze(-1).to(h.dtype)
-            object.__setattr__(self, "_wdq", wdq)   # cache only
-        return F.conv2d(h, wdq, self.lin.bias)
-
-
 def to_fp8_(root: nn.Module) -> None:
-    """Quantize Linear / 1x1-conv weights to E4M3 where cuBLASLt allows
-    it (K and N multiples of 16 — the token projection and the d→1 head
-    projections stay bf16); depthwise convs and norms stay as-is."""
+    """Quantize Linear weights to E4M3 where cuBLASLt allows it (K and N
+    multiples of 16 — the token projection and the d→1 head projections
+    stay bf16); the depthwise conv and norms stay as-is."""
     for name, child in root.named_children():
         if isinstance(child, nn.Linear):
             if child.in_features % 16 == 0 and child.out_features % 16 == 0:
                 setattr(root, name, FP8Linear(child))
-        elif isinstance(child, nn.Conv2d) and child.kernel_size == (1, 1):
-            if child.in_channels % 16 == 0 and child.out_channels % 16 == 0:
-                setattr(root, name, FP8Conv1x1(child))
         else:
             to_fp8_(child)
 
@@ -210,28 +185,29 @@ class RopeAttention(nn.Module):
 
 
 class ConvFFN(nn.Module):
-    """MBConv-style FFN: the usual up/down projections as 1x1 convs with
-    a 3x3 depthwise conv between them — a Go-locality prior (contacts,
-    liberties, captures) in the residual branch. The depthwise adds only
+    """MBConv-style FFN: up/down are plain MLP linears (identical math to
+    the 1x1 convs they replace — the GEMMs run on the natural [B,T,C]
+    layout); the 3x3 depthwise conv between them keeps the Go-locality
+    prior (contacts, liberties, captures). The depthwise adds only
     9·d_ff params and ~2% FLOPs per layer; size-agnostic (padding=1
     slides over any board, zero border padding matches the edge-distance
     features). Zero-init projection: the branch starts as the identity."""
 
     def __init__(self, d_model: int, d_ff: int):
         super().__init__()
-        self.up = nn.Conv2d(d_model, d_ff, 1)
+        self.up = nn.Linear(d_model, d_ff)
         self.dw = nn.Conv2d(d_ff, d_ff, 3, padding=1, groups=d_ff)
-        self.down = nn.Conv2d(d_ff, d_model, 1)
+        self.down = nn.Linear(d_ff, d_model)
         nn.init.zeros_(self.down.weight)
         nn.init.zeros_(self.down.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, T, C = x.shape
         b = math.isqrt(T)
-        h = x.transpose(1, 2).reshape(B, C, b, b)
-        h = F.gelu(self.dw(self.up(h)))
-        h = self.down(h)
-        return h.reshape(B, C, T).transpose(1, 2)
+        h = self.up(x).view(B, b, b, -1).permute(0, 3, 1, 2)
+        h = F.gelu(self.dw(h))
+        h = h.permute(0, 2, 3, 1).reshape(B, T, -1)
+        return self.down(h)
 
 
 class EncoderBlock(nn.Module):
