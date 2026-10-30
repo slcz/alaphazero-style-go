@@ -109,6 +109,9 @@ class Trainer:
     def _maybe_compile(self) -> None:
         if self.cfg.compile and self.device.type == "cuda":
             torch._inductor.config.triton.cudagraphs = False
+            # eval (256) then train (512) on the same code otherwise
+            # flips dynamo into symbolic-shape mode: minutes of compile
+            torch._dynamo.config.automatic_dynamic_shapes = False
             self.model = torch.compile(self._raw_model)
         else:
             self.model = self._raw_model
