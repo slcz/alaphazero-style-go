@@ -120,15 +120,16 @@ class FP8Linear(nn.Module):
         shape = x.shape
         x2 = x.reshape(-1, shape[-1])
         if x2.is_cuda:
-            # _scaled_mm applies scale_a/scale_b as DEQUANT multipliers:
-            # out = (mat1 @ mat2) * scale_a * scale_b — so both scales are
-            # amax/448 (E4M3 max), matching the weight quantization
-            sa = (x2.abs().amax() / 448.0).clamp(min=1e-12).float()
-            xq = (x2 / sa).clamp(-448, 448).to(torch.float8_e4m3fn)
-            y = torch._scaled_mm(xq, self.wq.t(), scale_a=sa,
-                                 scale_b=self.scale,
-                                 out_dtype=torch.bfloat16,
-                                 use_fast_accum=True)
+            # dynamic-FP8 GEMM (_scaled_mm) measured SLOWER than bf16 at
+            # these shapes: the per-call amax+cast passes and cuBLASLt fp8
+            # kernels lose more than the 2x matmul rate gains. So weights
+            # stay E4M3 (11x smaller checkpoint) and dequant lazily once;
+            # compute is the proven bf16 path.
+            wdq = getattr(self, "_wdq", None)
+            if wdq is None or wdq.device != x2.device:
+                wdq = (self.wq.float() * self.scale).to(torch.bfloat16)
+                object.__setattr__(self, "_wdq", wdq)   # cache only
+            y = F.linear(x2, wdq, self.bias)
         else:
             w = self.wq.to(x.dtype) * self.scale.to(x.dtype)
             y = x2 @ w.t()
