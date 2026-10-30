@@ -103,6 +103,8 @@ def main() -> int:
                     help="data epochs when --steps is 0")
     ap.add_argument("--batch", type=int, default=512)
     ap.add_argument("--lr", type=float, default=2e-4)
+    ap.add_argument("--opt", choices=("adam", "muon"), default="adam",
+                    help="muon: lr applies to hidden 2D matrices")
     ap.add_argument("--weight-decay", type=float, default=0.0)
     ap.add_argument("--val-frac", type=float, default=0.02)
     ap.add_argument("--val-every", type=int, default=500)
@@ -140,7 +142,8 @@ def main() -> int:
           f"{len(train_rows)} train positions, "
           f"{time.time() - t0:.0f}s total", flush=True)
 
-    cfg = TrainConfig(lr=args.lr, batch_size=args.batch, device=args.device,
+    cfg = TrainConfig(lr=args.lr, optimizer=args.opt,
+                      batch_size=args.batch, device=args.device,
                       seed=args.seed,
                       own_weight=0.0, score_pdf_weight=0.0,
                       score_cdf_weight=0.0,
