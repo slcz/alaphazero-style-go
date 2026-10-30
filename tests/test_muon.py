@@ -13,8 +13,9 @@ pytestmark = pytest.mark.skipif(
 
 def test_muon_minimizes_least_squares():
     torch.manual_seed(0)
-    A = torch.randn(256, 32)
-    target = torch.randn(256, 16)
+    Q, _ = torch.linalg.qr(torch.randn(256, 32))
+    A = Q                                 # orthonormal columns: clean basin
+    target = A @ (0.02 * torch.randn(32, 16))
     w = torch.nn.Parameter(torch.zeros(32, 16))
     opt = torch.optim.Muon([w], lr=0.02, adjust_lr_fn="original")
     first = None

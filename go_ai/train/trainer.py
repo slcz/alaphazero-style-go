@@ -106,7 +106,8 @@ class Trainer:
         if cfg.optimizer == "muon":
             mu = [p for p in params
                   if p.dim() == 2 and min(p.shape) >= 64]
-            ad = [p for p in params if p not in mu]
+            mu_ids = {id(p) for p in mu}
+            ad = [p for p in params if id(p) not in mu_ids]
             self.opt = torch.optim.Muon(mu, lr=cfg.lr,
                                         weight_decay=cfg.weight_decay,
                                         adjust_lr_fn="original")
