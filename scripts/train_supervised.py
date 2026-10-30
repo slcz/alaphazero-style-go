@@ -54,6 +54,18 @@ def games_from_args(args) -> list:
     return games
 
 
+# Process-pool workers inherit these via fork (copy-on-write); they must
+# stay untouched after the pool spawns and never import torch/CUDA.
+_MP_GAMES = None
+_MP_ROWS = None
+
+
+def _mp_sample(task):
+    j, sym = task
+    gi, i = _MP_ROWS[j]
+    return SD.supervised_sample(_MP_GAMES[gi], i, sym)
+
+
 def eval_val(trainer, val_games, val_rows, rng, n=2048, batch=256):
     """Policy top-1 / value acc over a random val subsample."""
     trainer.model.eval()
@@ -98,7 +110,7 @@ def main() -> int:
                     help="smoke-test config (d=64, 2 layers)")
     ap.add_argument("--val-n", type=int, default=2048)
     ap.add_argument("--workers", type=int, default=8,
-                    help="threads for sample prep (C calls release the GIL)")
+                    help="processes for sample prep (fork; workers=1 serial)")
     ap.add_argument("--micro", type=int, default=0,
                     help="grad-accumulation chunk size (0 = whole batch)")
     ap.add_argument("--no-compile", action="store_true",
@@ -149,21 +161,25 @@ def main() -> int:
         trainer.opt, T_max=args.steps)
 
     history = []
-    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import ProcessPoolExecutor
 
-    def one_sample(j):
-        gi, i = train_rows[pick[j]]
-        return SD.supervised_sample(train_games[gi], i, int(syms[j]))
+    # Processes, not threads: prep is GIL-bound python+numpy around tiny
+    # cffi calls (threads measured 5x SLOWER than serial, plus a cffi/GIL
+    # re-acquire deadlock). fork inherits train_games copy-on-write; the
+    # workers never touch torch/CUDA.
+    global _MP_GAMES, _MP_ROWS
+    _MP_GAMES, _MP_ROWS = train_games, train_rows
 
-    pool = (ThreadPoolExecutor(max_workers=args.workers)
+    pool = (ProcessPoolExecutor(max_workers=args.workers)
             if args.workers > 1 else None)
     for step in range(1, args.steps + 1):
         pick = rng.integers(0, len(train_rows), size=args.batch)
         syms = rng.integers(0, 8, size=args.batch)
-        if pool:                     # serial prep is ~0.3 s at batch 2048;
-            samples = list(pool.map(one_sample, range(args.batch)))
-        else:                        # the pool itself deadlocks under cffi
-            samples = [one_sample(j) for j in range(args.batch)]
+        tasks = [(int(pick[j]), int(syms[j])) for j in range(args.batch)]
+        if pool:
+            samples = list(pool.map(_mp_sample, tasks, chunksize=16))
+        else:
+            samples = [_mp_sample(t) for t in tasks]
         batch = {k: np.stack([s[k] for s in samples]) for k in samples[0]}
         m = trainer.train_step(tensors_to_torch(batch, trainer.device),
                                micro=args.micro)
