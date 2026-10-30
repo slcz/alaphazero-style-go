@@ -11,6 +11,6 @@ __pycache__/
 *.spbin
 *.pt
 *.onnx
-data/
+/data/
 runs/
 *.log
