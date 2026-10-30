@@ -8,7 +8,7 @@ engine's ChessTransformer; heads and RoPE are Go-specific).
     8 × encoder blocks
         ├─ LN → multi-head attention (8 heads): axial 2D RoPE on q/k
         │      (parameter-free; scores depend on (Δx, Δy) only)
-        └─ RMSNorm → up-GEMM (d → 4d) → 3x3 depthwise → GELU
+        └─ LN → up-GEMM (d → 4d) → 3x3 depthwise → GELU
            → down-GEMM (4d → d) → residual  (channels-last dw: the
              layout permutes are zero-copy views; fp8 GEMMs at inference)
       │ final LN
@@ -195,19 +195,16 @@ class RopeAttention(nn.Module):
         return self.proj(out.transpose(1, 2).contiguous().view(B, T, -1))
 
 
-class FusedFP8HybridFFN(nn.Module):
-    """RMSNorm -> FP8 up-GEMM -> channels-last 3x3 depthwise + GELU ->
-    FP8 down-GEMM -> residual (the MBConv FFN, laid out for fusion).
-
-    The [B,N,C] <-> [B,C,H,W] transition is zero-copy: the dw conv runs
-    channels_last, so both permutes are metadata views. up/down are
-    nn.Linear in training (autograd has no _scaled_mm backward) and are
-    swapped to FP8Linear by to_fp8_ for inference. Under torch.compile
-    the norm, GELU and residual fuse into neighbor kernels."""
+class ConvFFN(nn.Module):
+    """MBConv-style FFN: up/down MLP linears, 3x3 depthwise conv between
+    them (the Go-locality prior; ~2% of FLOPs). The dw conv runs
+    channels_last so the [B,N,C] <-> [B,C,H,W] transitions are zero-copy
+    views — and under torch.compile the surrounding norm/cast/GELU fuse
+    into neighbor kernels. Zero-init down: the branch starts as the
+    identity."""
 
     def __init__(self, d_model: int, d_ff: int):
         super().__init__()
-        self.norm = nn.RMSNorm(d_model, eps=1e-6)
         self.up = nn.Linear(d_model, d_ff)
         self.dw = nn.Conv2d(d_ff, d_ff, 3, padding=1, groups=d_ff)
         self.dw.to(memory_format=torch.channels_last)
@@ -218,10 +215,10 @@ class FusedFP8HybridFFN(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, N, C = x.shape
         b = math.isqrt(N)
-        h = self.up(self.norm(x)).view(B, b, b, -1).permute(0, 3, 1, 2)
+        h = self.up(x).view(B, b, b, -1).permute(0, 3, 1, 2)
         h = F.gelu(self.dw(h))
         h = h.permute(0, 2, 3, 1).reshape(B, N, -1)
-        return x + self.down(h)
+        return self.down(h)
 
 
 class EncoderBlock(nn.Module):
@@ -232,11 +229,13 @@ class EncoderBlock(nn.Module):
         super().__init__()
         self.ln1 = nn.LayerNorm(cfg.d_model)
         self.attn = RopeAttention(cfg)
-        self.ff = FusedFP8HybridFFN(cfg.d_model, cfg.d_ff)
+        self.ln2 = nn.LayerNorm(cfg.d_model)
+        self.ff = ConvFFN(cfg.d_model, cfg.d_ff)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x + self.attn(self.ln1(x))
-        return self.ff(x)          # FFN owns its RMSNorm and residual
+        x = x + self.ff(self.ln2(x))
+        return x
 
 
 # ---------------------------------------------------------------------------
