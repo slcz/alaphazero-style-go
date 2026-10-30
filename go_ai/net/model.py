@@ -214,9 +214,11 @@ class RopeAttention(nn.Module):
         k = apply_rope(k.view(B, T, self.h, self.dh).transpose(1, 2),
                        b, self.pairs, self.lam0)
         v = v.view(B, T, self.h, self.dh).transpose(1, 2)
-        if q.is_cuda:
+        if q.is_cuda and not torch.compiler.is_compiling():
             # flash never materializes the T×T scores; the math fallback
-            # needs B·h·T² bf16 live (17 GB/layer at B=8192) — OOM/hang
+            # needs B·h·T² bf16 live (17 GB/layer at B=8192) — OOM/hang.
+            # under compile the context breaks dynamo's fake-tensor
+            # dispatch — inductor picks flash itself
             from torch.nn.attention import SDPBackend, sdpa_kernel
             with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
                 out = F.scaled_dot_product_attention(q, k, v)
