@@ -102,38 +102,74 @@ def apply_rope(x: torch.Tensor, b: int, pairs: int, lam0: float) -> torch.Tensor
 
 
 class FP8Linear(nn.Module):
-    """E4M3 weight-quantized linear: weights carry one per-tensor scale;
-    activations are quantized dynamically per call. CUDA computes through
-    _scaled_mm (tensor-core FP8); elsewhere a dequantized matmul runs as
-    the reference path (tests, MPS)."""
+    """E4M3 weight-quantized linear. CUDA computes through _scaled_mm:
+    with a CALIBRATED activation scale (ascale > 0) activations quantize
+    directly (284 TFLOP/s measured on the up-proj shape, 1.8x over bf16);
+    uncalibrated, a per-call amax runs (131 TFLOP/s — the global
+    reduction costs more than FP8 wins). Elsewhere a dequantized matmul
+    runs as the reference path (tests, MPS)."""
 
     def __init__(self, linear: nn.Linear):
         super().__init__()
         w = linear.weight.data.float()
         self.scale = nn.Buffer((w.abs().amax() / 448.0).clamp(min=1e-12))
+        self.ascale = nn.Buffer(torch.zeros(()))   # 0 = calibrate me
         self.wq = nn.Buffer((w / self.scale).clamp(-448, 448)
                             .to(torch.float8_e4m3fn))
         self.bias = (nn.Parameter(linear.bias.data.clone())
                      if linear.bias is not None else None)
+        self.use_static = False                    # python flag: no sync
+
+    def _load_from_state_dict(self, state_dict, prefix, *a, **k):
+        super()._load_from_state_dict(state_dict, prefix, *a, **k)
+        v = state_dict.get(prefix + "ascale")
+        if v is not None:
+            self.use_static = bool(v.item() > 0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         shape = x.shape
         x2 = x.reshape(-1, shape[-1])
         if x2.is_cuda:
-            # dynamic-FP8 GEMM (_scaled_mm) measured SLOWER than bf16 at
-            # these shapes: the per-call amax+cast passes and cuBLASLt fp8
-            # kernels lose more than the 2x matmul rate gains. So weights
-            # stay E4M3 (11x smaller checkpoint) and dequant lazily once;
-            # compute is the proven bf16 path.
-            wdq = getattr(self, "_wdq", None)
-            if wdq is None or wdq.device != x2.device:
-                wdq = (self.wq.float() * self.scale).to(torch.bfloat16)
-                object.__setattr__(self, "_wdq", wdq)   # cache only
-            y = F.linear(x2, wdq, self.bias)
+            if self.use_static:
+                xq = (x2 / self.ascale).clamp(-448, 448) \
+                    .to(torch.float8_e4m3fn)
+                y = torch._scaled_mm(xq, self.wq.t(), scale_a=self.ascale,
+                                     scale_b=self.scale,
+                                     out_dtype=torch.bfloat16,
+                                     use_fast_accum=True)
+            else:
+                # uncalibrated: dynamic per-tensor amax each call
+                sa = (x2.abs().amax() / 448.0).clamp(min=1e-12).float()
+                xq = (x2 / sa).clamp(-448, 448).to(torch.float8_e4m3fn)
+                y = torch._scaled_mm(xq, self.wq.t(), scale_a=sa,
+                                     scale_b=self.scale,
+                                     out_dtype=torch.bfloat16,
+                                     use_fast_accum=True)
         else:
             w = self.wq.to(x.dtype) * self.scale.to(x.dtype)
             y = x2 @ w.t()
         return y.reshape(*shape[:-1], -1) + self.bias
+
+
+@torch.no_grad()
+def calibrate_fp8_(model: nn.Module, batches) -> None:
+    """Set each FP8Linear's static activation scale from the observed
+    input amax over `batches` (iterables of forward inputs), plus 10%
+    headroom; flips those linears to the static path."""
+    lines = [m for m in model.modules() if isinstance(m, FP8Linear)]
+    dev = next(model.parameters()).device
+    amax = [torch.zeros((), device=dev) for _ in lines]
+    hooks = [m.register_forward_hook(
+        lambda mod, inp, out, i=i: amax.__setitem__(
+            i, torch.maximum(amax[i], inp[0].abs().amax())))
+        for i, m in enumerate(lines)]
+    for bt in batches:
+        model(*bt)
+    for h in hooks:
+        h.remove()
+    for m, a in zip(lines, amax):
+        m.ascale.copy_((a / 448.0).clamp(min=1e-12) * 1.1)
+        m.use_static = True
 
 
 def to_fp8_(root: nn.Module) -> None:

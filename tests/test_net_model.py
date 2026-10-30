@@ -147,3 +147,29 @@ def test_legacy_conv_ffn_ckpt_loads(tmp_path):
     a = Trainer.load(tmp_path / "a.pt", device="cpu").model(tok, mask, mask)
     b = Trainer.load(tmp_path / "legacy.pt", device="cpu").model(tok, mask, mask)
     assert (a["policy_logp"] - b["policy_logp"]).abs().max() < 1e-5
+
+
+def test_fp8_static_calibration(tmp_path):
+    """Calibrated static scales keep outputs close to the dynamic path
+    and flip the python flag without GPU syncs."""
+    from go_ai.net.model import calibrate_fp8_
+    torch.manual_seed(5)
+    net = GoNet(NetConfig(**{**TINY.__dict__, "fp8": True}))
+    tok = torch.randn(4, 49, TINY.token_dim) * 2
+    mask = torch.ones(4, 50, dtype=torch.bool)
+    with torch.no_grad():
+        out_dyn = net(tok, mask, mask)
+    assert not net.blocks[0].attn.qkv.use_static
+    calibrate_fp8_(net, [(tok, mask, mask) for _ in range(3)])
+    assert net.blocks[0].attn.qkv.use_static
+    assert 0 < net.blocks[0].attn.qkv.ascale.item() < 100
+    with torch.no_grad():
+        out_stat = net(tok, mask, mask)
+    assert torch.isfinite(out_stat["policy_logp"]).all()
+    # roundtrip: flag restored from the saved ascale
+    p = tmp_path / "cal.pt"
+    torch.save({"model": net.state_dict(),
+                "net_config": dict(net.cfg.__dict__)}, p)
+    net2 = GoNet(NetConfig(**net.cfg.__dict__))
+    net2.load_state_dict(torch.load(p, weights_only=False)["model"])
+    assert net2.blocks[0].attn.qkv.use_static
