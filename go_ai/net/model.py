@@ -165,8 +165,14 @@ def calibrate_fp8_(model: nn.Module, batches) -> None:
         lambda mod, inp, out, i=i: amax.__setitem__(
             i, torch.maximum(amax[i], inp[0].abs().amax())))
         for i, m in enumerate(lines)]
-    for bt in batches:
-        model(*bt)
+    # calibrate in the exact inference context (bf16 autocast on cuda):
+    # the scales must describe the activations the static path will see
+    import contextlib
+    ac = (torch.autocast("cuda", dtype=torch.bfloat16)
+          if dev.type == "cuda" else contextlib.nullcontext())
+    with ac:
+        for bt in batches:
+            model(*bt)
     for h in hooks:
         h.remove()
     for m, a in zip(lines, amax):
