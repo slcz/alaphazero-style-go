@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import pickle
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -40,16 +41,25 @@ def main() -> int:
     rng = np.random.default_rng(a.seed + 7)
     pick = rng.permutation(len(val_rows))[:a.n]
     B = 512
+
+    # build all batches first so the timed loop measures pure forward
+    batches = []
+    for s in range(0, len(pick), B):
+        rows = [val_rows[i] for i in pick[s:s + B]]
+        samples = [SD.supervised_sample(val_games[gi], i,
+                                        int(rng.integers(0, 8)))
+                   for gi, i in rows]
+        batches.append({k: torch.from_numpy(
+            np.stack([x[k] for x in samples])).cuda() for k in samples[0]})
+
     agg = {"pol": 0.0, "val": 0.0, "aux": 0.0, "w_aux": 0.0,
            "t1": 0, "t5": 0, "vacc": 0, "n": 0}
+    ev0, ev1 = torch.cuda.Event(True), torch.cuda.Event(True)
+    torch.cuda.synchronize()
+    t0 = time.time()
+    ev0.record()
     with torch.no_grad():
-        for s in range(0, len(pick), B):
-            rows = [val_rows[i] for i in pick[s:s + B]]
-            samples = [SD.supervised_sample(val_games[gi], i,
-                                            int(rng.integers(0, 8)))
-                       for gi, i in rows]
-            bt = {k: torch.from_numpy(np.stack([x[k] for x in samples])).cuda()
-                  for k in samples[0]}
+        for bt in batches:
             out = tr.model(bt["tokens"], bt["mask"], bt["aux_mask"])
 
             slot_logp = out["policy_logp"].gather(1, bt["pi_slots"])
@@ -67,14 +77,22 @@ def main() -> int:
             agg["w_aux"] += bt["aux_w"].sum().item()
             agg["t1"] += (top5[:, 0] == tgt).sum().item()
             agg["t5"] += (top5 == tgt[:, None]).any(-1).sum().item()
-            agg["vacc"] += (out["wdl"].argmax(-1) == tgt * 0
-                            + bt["wdl"].argmax(-1)).sum().item()
-            agg["n"] += len(samples)
-    n, wa = agg["n"], max(agg["w_aux"], 1.0)
+            agg["vacc"] += (out["wdl"].argmax(-1)
+                            == bt["wdl"].argmax(-1)).sum().item()
+            agg["n"] += len(bt["tokens"])
+    ev1.record()
+    torch.cuda.synchronize()
+    wall = time.time() - t0
+    gpu = ev0.elapsed_time(ev1) / 1e3
+    n = agg["n"]
+    gflop = 16.6e9                      # forward, per sample (see design)
     print(f"policy CE {agg['pol']/n:.4f} nats  (ppl {np.exp(agg['pol']/n):.2f})  "
           f"top1 {agg['t1']/n:.4f}  top5 {agg['t5']/n:.4f}")
     print(f"value   CE {agg['val']/n:.4f} nats  acc {agg['vacc']/n:.4f}")
-    print(f"aux     CE {agg['aux']/wa:.4f} nats")
+    print(f"aux     CE {agg['aux']/max(agg['w_aux'],1.0):.4f} nats")
+    print(f"throughput: {n/gpu:,.0f} samples/s forward (gpu {gpu:.2f}s)  "
+          f"= {n*gflop/gpu/1e12:.1f} TFLOP/s   "
+          f"end-to-end {n/wall:,.0f} samples/s")
     return 0
 
 
