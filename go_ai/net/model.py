@@ -116,7 +116,9 @@ class FP8Linear(nn.Module):
         self.ascale = nn.Buffer(torch.zeros(()))   # 0 = calibrate me
         self.wq = nn.Buffer((w / self.scale).clamp(-448, 448)
                             .to(torch.float8_e4m3fn))
-        self.bias = (nn.Parameter(linear.bias.data.clone())
+        # bf16 bias: an fp32 bias would promote _scaled_mm's bf16 output
+        # to fp32 and break the flash-attention dtype contract downstream
+        self.bias = (nn.Parameter(linear.bias.data.to(torch.bfloat16))
                      if linear.bias is not None else None)
         self.use_static = False                    # python flag: no sync
 
