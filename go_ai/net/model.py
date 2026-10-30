@@ -142,9 +142,16 @@ class FP8Linear(nn.Module):
                                  out_dtype=torch.bfloat16,
                                  use_fast_accum=True)
         else:
-            w = self.wq.to(x.dtype) * self.scale.to(x.dtype)
-            y = x2 @ w.t() + self.bias
-        return y.reshape(*shape[:-1], -1)
+            # non-CUDA (M4 play, CPU tests): dequant to bf16 once — the
+            # FP8 checkpoint then runs as a plain bf16 network
+            wdq = getattr(self, "_wdq", None)
+            if wdq is None or wdq.device != x2.device:
+                wdq = (self.wq.to(torch.bfloat16)
+                       * self.scale.to(torch.bfloat16))
+                object.__setattr__(self, "_wdq", wdq)   # cache only
+            y = F.linear(x2.to(wdq.dtype), wdq, self.bias)
+        # keep the stream dtype stable (fp32 tests, bf16 serving)
+        return y.reshape(*shape[:-1], -1).to(x2.dtype)
 
 
 def to_fp8_(root: nn.Module) -> None:
@@ -216,7 +223,9 @@ class ConvFFN(nn.Module):
         B, N, C = x.shape
         b = math.isqrt(N)
         h = self.up(x).view(B, b, b, -1).permute(0, 3, 1, 2)
-        h = F.gelu(self.dw(h))
+        h = F.gelu(F.conv2d(h, self.dw.weight.to(h.dtype),
+                            self.dw.bias.to(h.dtype), padding=1,
+                            groups=self.dw.groups))
         h = h.permute(0, 2, 3, 1).reshape(B, N, -1)
         return self.down(h)
 

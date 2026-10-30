@@ -117,7 +117,12 @@ def push(bank: int, n: int) -> int:
         with torch.inference_mode():
             s["xd"][:n, :T].copy_(s["x"][:n, :T])
             s["md"][:n, :b * b + 1].copy_(s["m"][:n, :b * b + 1])
-            out = _S["model"](s["xd"][:n, :T], s["md"][:n, :b * b + 1])
+            if _S["bf16"] and torch.device(_S["device"]).type == "mps":
+                with torch.autocast("mps", dtype=torch.bfloat16):
+                    out = _S["model"](s["xd"][:n, :T],
+                                      s["md"][:n, :b * b + 1])
+            else:
+                out = _S["model"](s["xd"][:n, :T], s["md"][:n, :b * b + 1])
             s["lp"][:n].zero_()                  # tail stays 0 for C
             s["lp"][:n, :b * b + 1].copy_(out["policy_logp"].cpu())
             s["w"][:n] = torch.softmax(out["wdl"], dim=-1).cpu()
