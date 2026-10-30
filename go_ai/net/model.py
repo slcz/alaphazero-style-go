@@ -145,22 +145,20 @@ class FP8Linear(nn.Module):
             if self.use_static:
                 xq = (x2 / self.ascale).clamp(-448, 448) \
                     .to(torch.float8_e4m3fn)
-                y = torch._scaled_mm(xq, self.wq.t(), scale_a=self.ascale,
-                                     scale_b=self.scale,
-                                     out_dtype=torch.bfloat16,
-                                     use_fast_accum=True)
-            else:
-                # uncalibrated: dynamic per-tensor amax each call
+                sa = self.ascale
+            else:                # uncalibrated: dynamic per-tensor amax
                 sa = (x2.abs().amax() / 448.0).clamp(min=1e-12).float()
                 xq = (x2 / sa).clamp(-448, 448).to(torch.float8_e4m3fn)
-                y = torch._scaled_mm(xq, self.wq.t(), scale_a=sa,
-                                     scale_b=self.scale,
-                                     out_dtype=torch.bfloat16,
-                                     use_fast_accum=True)
+            # bias fused in the cublasLt epilogue (a separate y + bias
+            # pass costs a full read+write of the output)
+            y = torch._scaled_mm(xq, self.wq.t(), scale_a=sa,
+                                 scale_b=self.scale, bias=self.bias,
+                                 out_dtype=torch.bfloat16,
+                                 use_fast_accum=True)
         else:
             w = self.wq.to(x.dtype) * self.scale.to(x.dtype)
-            y = x2 @ w.t()
-        return y.reshape(*shape[:-1], -1) + self.bias
+            y = x2 @ w.t() + self.bias
+        return y.reshape(*shape[:-1], -1)
 
 
 @torch.no_grad()
