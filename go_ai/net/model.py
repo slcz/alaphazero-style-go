@@ -152,13 +152,16 @@ class FP8Conv1x1(nn.Module):
 
 
 def to_fp8_(root: nn.Module) -> None:
-    """Quantize every Linear and 1x1 Conv2d under root to E4M3 weights;
-    depthwise convs and norms stay as-is."""
+    """Quantize Linear / 1x1-conv weights to E4M3 where cuBLASLt allows
+    it (K and N multiples of 16 — the token projection and the d→1 head
+    projections stay bf16); depthwise convs and norms stay as-is."""
     for name, child in root.named_children():
         if isinstance(child, nn.Linear):
-            setattr(root, name, FP8Linear(child))
+            if child.in_features % 16 == 0 and child.out_features % 16 == 0:
+                setattr(root, name, FP8Linear(child))
         elif isinstance(child, nn.Conv2d) and child.kernel_size == (1, 1):
-            setattr(root, name, FP8Conv1x1(child))
+            if child.in_channels % 16 == 0 and child.out_channels % 16 == 0:
+                setattr(root, name, FP8Conv1x1(child))
         else:
             to_fp8_(child)
 
