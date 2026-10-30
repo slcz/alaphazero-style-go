@@ -112,46 +112,32 @@ def apply_rope(x: torch.Tensor, b: int, pairs: int, lam0: float) -> torch.Tensor
 
 
 class FP8Linear(nn.Module):
-    """E4M3 weight-quantized linear. CUDA computes through _scaled_mm:
-    with a CALIBRATED activation scale (ascale > 0) activations quantize
-    directly (284 TFLOP/s measured on the up-proj shape, 1.8x over bf16);
-    uncalibrated, a per-call amax runs (131 TFLOP/s — the global
-    reduction costs more than FP8 wins). Elsewhere a dequantized matmul
-    runs as the reference path (tests, MPS)."""
+    """E4M3 weight-quantized linear. CUDA computes through _scaled_mm
+    with FP8 activations: x is cast DIRECTLY (scale_a = 1) — every
+    quantized linear consumes LN-bounded input (|x| <= sqrt(T) ~ 19,
+    far under E4M3's 448), so no activation scale or clamp is needed;
+    fp8 relative precision is scale-invariant. Elsewhere a dequantized
+    matmul runs as the reference path (tests, MPS)."""
 
     def __init__(self, linear: nn.Linear):
         super().__init__()
         w = linear.weight.data.float()
         self.scale = nn.Buffer((w.abs().amax() / 448.0).clamp(min=1e-12))
-        self.ascale = nn.Buffer(torch.zeros(()))   # 0 = calibrate me
         self.wq = nn.Buffer((w / self.scale).clamp(-448, 448)
                             .to(torch.float8_e4m3fn))
+        self.one = nn.Buffer(torch.ones(()))       # scale_a, rides .to()
         # bf16 bias: an fp32 bias would promote _scaled_mm's bf16 output
         # to fp32 and break the flash-attention dtype contract downstream
         self.bias = (nn.Parameter(linear.bias.data.to(torch.bfloat16))
                      if linear.bias is not None else None)
-        self.use_static = False                    # python flag: no sync
-
-    def _load_from_state_dict(self, state_dict, prefix, *a, **k):
-        super()._load_from_state_dict(state_dict, prefix, *a, **k)
-        v = state_dict.get(prefix + "ascale")
-        if v is not None:
-            self.use_static = bool(v.item() > 0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         shape = x.shape
         x2 = x.reshape(-1, shape[-1])
         if x2.is_cuda:
-            if self.use_static:
-                xq = (x2 / self.ascale).clamp(-448, 448) \
-                    .to(torch.float8_e4m3fn)
-                sa = self.ascale
-            else:                # uncalibrated: dynamic per-tensor amax
-                sa = (x2.abs().amax() / 448.0).clamp(min=1e-12).float()
-                xq = (x2 / sa).clamp(-448, 448).to(torch.float8_e4m3fn)
-            # bias fused in the cublasLt epilogue (a separate y + bias
-            # pass costs a full read+write of the output)
-            y = torch._scaled_mm(xq, self.wq.t(), scale_a=sa,
+            # cast saturating-free: inputs are LN-bounded (see class doc)
+            xq = x2.to(torch.float8_e4m3fn)
+            y = torch._scaled_mm(xq, self.wq.t(), scale_a=self.one,
                                  scale_b=self.scale, bias=self.bias,
                                  out_dtype=torch.bfloat16,
                                  use_fast_accum=True)
@@ -159,33 +145,6 @@ class FP8Linear(nn.Module):
             w = self.wq.to(x.dtype) * self.scale.to(x.dtype)
             y = x2 @ w.t() + self.bias
         return y.reshape(*shape[:-1], -1)
-
-
-@torch.no_grad()
-def calibrate_fp8_(model: nn.Module, batches) -> None:
-    """Set each FP8Linear's static activation scale from the observed
-    input amax over `batches` (iterables of forward inputs), plus 10%
-    headroom; flips those linears to the static path."""
-    lines = [m for m in model.modules() if isinstance(m, FP8Linear)]
-    dev = next(model.parameters()).device
-    amax = [torch.zeros((), device=dev) for _ in lines]
-    hooks = [m.register_forward_hook(
-        lambda mod, inp, out, i=i: amax.__setitem__(
-            i, torch.maximum(amax[i], inp[0].abs().amax())))
-        for i, m in enumerate(lines)]
-    # calibrate in the exact inference context (bf16 autocast on cuda):
-    # the scales must describe the activations the static path will see
-    import contextlib
-    ac = (torch.autocast("cuda", dtype=torch.bfloat16)
-          if dev.type == "cuda" else contextlib.nullcontext())
-    with ac:
-        for bt in batches:
-            model(*bt)
-    for h in hooks:
-        h.remove()
-    for m, a in zip(lines, amax):
-        m.ascale.copy_((a / 448.0).clamp(min=1e-12) * 1.1)
-        m.use_static = True
 
 
 def to_fp8_(root: nn.Module) -> None:
