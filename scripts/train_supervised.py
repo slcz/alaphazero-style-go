@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import time
 from pathlib import Path
@@ -96,7 +97,10 @@ def main() -> int:
     ap.add_argument("--out", default="sup/ckpt.pt")
     ap.add_argument("--base-ckpt", default=None)
     ap.add_argument("--b", type=int, default=19)
-    ap.add_argument("--steps", type=int, default=20000)
+    ap.add_argument("--steps", type=int, default=0,
+                    help="optimizer steps (0: derive from --epochs)")
+    ap.add_argument("--epochs", type=float, default=1.0,
+                    help="data epochs when --steps is 0")
     ap.add_argument("--batch", type=int, default=512)
     ap.add_argument("--lr", type=float, default=2e-4)
     ap.add_argument("--val-frac", type=float, default=0.02)
@@ -155,10 +159,13 @@ def main() -> int:
 
     p0, v0 = eval_val(trainer, val_games, val_rows, rng, n=args.val_n)
     print(f"val BEFORE: policy top1 {p0:.3f}  value {v0:.3f}", flush=True)
+    # one pass over the data by default, as in chess sp_round_train
+    steps = args.steps or math.ceil(
+        len(train_rows) * args.epochs / args.batch)
     # constant LR thrashes on this loss (observed: val top-1 peaks then
     # slides while train loss oscillates); cosine to zero fixes the tail
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(
-        trainer.opt, T_max=args.steps)
+        trainer.opt, T_max=steps)
 
     history = []
     from concurrent.futures import ProcessPoolExecutor
@@ -172,7 +179,7 @@ def main() -> int:
 
     pool = (ProcessPoolExecutor(max_workers=args.workers)
             if args.workers > 1 else None)
-    for step in range(1, args.steps + 1):
+    for step in range(1, steps + 1):
         pick = rng.integers(0, len(train_rows), size=args.batch)
         syms = rng.integers(0, 8, size=args.batch)
         tasks = [(int(pick[j]), int(syms[j])) for j in range(args.batch)]
@@ -185,11 +192,11 @@ def main() -> int:
                                micro=args.micro)
         sched.step()
         history.append(m)
-        if step % 10 == 0 or step == args.steps:
+        if step % 10 == 0 or step == steps:
             print(f"step {step} loss {m['loss']:.4f} policy {m['policy']:.4f} "
                   f"acc {m['policy_acc']:.3f} v {m['value']:.4f} "
                   f"({time.time() - t0:.0f}s)", flush=True)
-        if step % args.val_every == 0 or step == args.steps:
+        if step % args.val_every == 0 or step == steps:
             p1, v1 = eval_val(trainer, val_games, val_rows, rng,
                               n=args.val_n)
             print(f"step {step}/{args.steps} loss {m['loss']:.4f} "
