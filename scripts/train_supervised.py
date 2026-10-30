@@ -36,20 +36,21 @@ from go_ai.train.trainer import (TrainConfig, Trainer, tensors_to_torch)
 def games_from_args(args) -> list:
     if args.cache and Path(args.cache).exists():
         games = SD.load_cache(args.cache)
-        print(f"cache: {len(games)} games from {args.cache}")
+        print(f"cache: {len(games)} games from {args.cache}", flush=True)
         return games
     games = []
     for d in args.data_dir:
         p = REPO / d if not d.startswith("/") else Path(d)
+        print(f"parsing {p} ...", flush=True)
         g = load_dir(p, b=args.b)
-        print(f"  {p}: {len(g)} games kept")
+        print(f"  {p}: {len(g)} games kept", flush=True)
         games.extend(g)
     if not games:
         print("no games (run scripts/download_kgs.py first)", file=sys.stderr)
         sys.exit(1)
     if args.cache:
         SD.cache_games(games, args.cache)
-        print(f"cached {len(games)} games -> {args.cache}")
+        print(f"cached {len(games)} games -> {args.cache}", flush=True)
     return games
 
 
@@ -96,6 +97,8 @@ def main() -> int:
     ap.add_argument("--tiny", action="store_true",
                     help="smoke-test config (d=64, 2 layers)")
     ap.add_argument("--val-n", type=int, default=2048)
+    ap.add_argument("--workers", type=int, default=8,
+                    help="threads for sample prep (C calls release the GIL)")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--json", default=None)
     args = ap.parse_args()
@@ -142,20 +145,21 @@ def main() -> int:
         trainer.opt, T_max=args.steps)
 
     history = []
-    for step in range(1, args.steps + 1):
-        pick = rng.integers(0, len(train_rows), size=args.batch)
-        syms = rng.integers(0, 8, size=args.batch)
-        proto = SD.supervised_sample(train_games[train_rows[pick[0]][0]],
-                                     train_rows[pick[0]][1], int(syms[0]))
-        batch = {k: np.zeros((args.batch,) + v.shape, v.dtype)
-                 for k, v in proto.items()}
-        for j, r in enumerate(pick):
-            s = SD.supervised_sample(train_games[train_rows[r][0]],
-                                     train_rows[r][1], int(syms[j]))
-            for k, v in s.items():
-                batch[k][j] = v
-        m = trainer.train_step(tensors_to_torch(batch, trainer.device))
-        sched.step()
+    from concurrent.futures import ThreadPoolExecutor
+
+    def one_sample(j):
+        gi, i = train_rows[pick[j]]
+        return SD.supervised_sample(train_games[gi], i, int(syms[j]))
+
+    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+        for step in range(1, args.steps + 1):
+            pick = rng.integers(0, len(train_rows), size=args.batch)
+            syms = rng.integers(0, 8, size=args.batch)
+            samples = list(pool.map(one_sample, range(args.batch)))
+            batch = {k: np.stack([s[k] for s in samples])
+                     for k in samples[0]}
+            m = trainer.train_step(tensors_to_torch(batch, trainer.device))
+            sched.step()
         history.append(m)
         if step % args.val_every == 0 or step == args.steps:
             p1, v1 = eval_val(trainer, val_games, val_rows, rng,
