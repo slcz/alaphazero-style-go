@@ -303,7 +303,7 @@ static void test_gtp(void) {
     State s19, s7;
     go_state_init(&s19, 19, 7.5f, 500);
     go_state_init(&s7, 7, 9.5f, 150);
-    char v[4];
+    char v[6];
     Move m;
 
     move_to_gtp(0, 19, v);

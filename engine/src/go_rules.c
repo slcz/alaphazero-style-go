@@ -231,7 +231,7 @@ int state_termination(const State *s, float *score, float *ownership) {
 
 static const char GO_COLS[] = "ABCDEFGHJKLMNOPQRST";   /* GTP: no I */
 
-void move_to_gtp(Move m, int b, char out[4]) {
+void move_to_gtp(Move m, int b, char out[6]) {
     if (m == MOVE_PASS) {
         strcpy(out, "pass");
         return;

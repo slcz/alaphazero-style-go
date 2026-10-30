@@ -125,7 +125,7 @@ static void do_genmove(char *args, const char *id) {
     }
     puct_think(g, g_sims);
     Move mv = puct_best_move(g);
-    char v[4];
+    char v[6];
     move_to_gtp(mv, puct_state(g)->b, v);
     puct_play(g, mv);
     respond(id, "%s", v);
