@@ -169,6 +169,9 @@ def main() -> int:
                                micro=args.micro)
         sched.step()
         history.append(m)
+        print(f"step {step} loss {m['loss']:.4f} policy {m['policy']:.4f} "
+              f"acc {m['policy_acc']:.3f} v {m['value']:.4f} "
+              f"({time.time() - t0:.0f}s)", flush=True)
         if step % args.val_every == 0 or step == args.steps:
             p1, v1 = eval_val(trainer, val_games, val_rows, rng,
                               n=args.val_n)
