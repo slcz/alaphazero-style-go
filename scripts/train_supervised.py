@@ -99,6 +99,8 @@ def main() -> int:
     ap.add_argument("--val-n", type=int, default=2048)
     ap.add_argument("--workers", type=int, default=8,
                     help="threads for sample prep (C calls release the GIL)")
+    ap.add_argument("--micro", type=int, default=0,
+                    help="grad-accumulation chunk size (0 = whole batch)")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--json", default=None)
     args = ap.parse_args()
@@ -158,7 +160,8 @@ def main() -> int:
             samples = list(pool.map(one_sample, range(args.batch)))
             batch = {k: np.stack([s[k] for s in samples])
                      for k in samples[0]}
-            m = trainer.train_step(tensors_to_torch(batch, trainer.device))
+            m = trainer.train_step(tensors_to_torch(batch, trainer.device),
+                                   micro=args.micro)
             sched.step()
         history.append(m)
         if step % args.val_every == 0 or step == args.steps:

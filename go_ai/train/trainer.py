@@ -121,7 +121,9 @@ class Trainer:
         import contextlib
         return contextlib.nullcontext()
 
-    def train_step(self, batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
+    def _losses(self, batch: Dict[str, torch.Tensor]):
+        """Forward + loss terms for one (micro-)batch; backward is the
+        caller's job."""
         with self._autocast():
             out = self.model(batch["tokens"], batch["mask"],
                              batch["aux_mask"])
@@ -177,15 +179,6 @@ class Trainer:
                     + self.cfg.score_pdf_weight * score_pdf_loss
                     + self.cfg.score_cdf_weight * score_cdf_loss)
 
-        self.opt.zero_grad(set_to_none=True)      # backward OUTSIDE autocast
-        loss.backward()
-        if self.cfg.grad_clip:
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(),
-                                           self.cfg.grad_clip)
-        self.opt.step()
-        self.steps += 1
-
-        with torch.no_grad():
             scalars = {
                 "loss": loss.detach(),
                 "policy": policy_loss.detach(),
@@ -198,8 +191,34 @@ class Trainer:
                 "value_acc": (out["wdl"].argmax(-1)
                               == batch["wdl"].argmax(-1)).float().mean(),
             }
-            values = torch.stack(list(scalars.values())).tolist()
-        return dict(zip(scalars.keys(), values))
+        return loss, scalars
+
+    def train_step(self, batch: Dict[str, torch.Tensor],
+                   micro: int = 0) -> Dict[str, float]:
+        """One optimization step over `batch`. micro>0 splits it into
+        micro-sized chunks (grad accumulation) — one opt.step at the
+        end; metric scalars are sample-weighted means over the chunks."""
+        n = batch["tokens"].shape[0]
+        starts = list(range(0, n, micro or n))
+        self.opt.zero_grad(set_to_none=True)
+        acc = None
+        for s in starts:
+            e = s + (micro or n)
+            sub = {k: v[s:e] for k, v in batch.items()}
+            loss, sc = self._losses(sub)
+            (loss / len(starts)).backward()   # backward OUTSIDE autocast
+            w = sub["tokens"].shape[0]
+            if acc is None:
+                acc = {k: v * w for k, v in sc.items()}
+            else:
+                for k, v in sc.items():
+                    acc[k] += v * w
+        if self.cfg.grad_clip:
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(),
+                                           self.cfg.grad_clip)
+        self.opt.step()
+        self.steps += 1
+        return {k: (v / n).item() for k, v in acc.items()}
 
     # --- eval without training ------------------------------------------
 
