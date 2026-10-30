@@ -146,18 +146,29 @@ class Trainer:
             else:
                 aux_loss = torch.zeros((), device=self.device)
 
-            own_loss = F.binary_cross_entropy_with_logits(
-                out["own"], batch["own"])
+            # ownership/score labels exist only in selfplay (human games
+            # end by resignation — no scoring position); absent keys skip
+            # the loss, so the supervised phase trains policy/value/aux
+            # only and the heads ride along untrained
+            if "own" in batch:
+                own_loss = F.binary_cross_entropy_with_logits(
+                    out["own"], batch["own"])
+            else:
+                own_loss = torch.zeros((), device=self.device)
 
-            score_logp = F.log_softmax(out["score"], dim=-1)
-            score_pdf_loss = F.nll_loss(score_logp, batch["score_bin"])
+            if "score_bin" in batch:
+                score_logp = F.log_softmax(out["score"], dim=-1)
+                score_pdf_loss = F.nll_loss(score_logp, batch["score_bin"])
 
-            with torch.no_grad():        # target cdf from the one-hot bin
-                tgt = torch.zeros_like(score_logp)
-                tgt.scatter_(1, batch["score_bin"][:, None], 1.0)
-                tgt_cdf = tgt.cumsum(dim=1)
-            score_cdf_loss = ((score_logp.exp().cumsum(dim=1) - tgt_cdf)
-                              ** 2).mean()
+                with torch.no_grad():        # target cdf from the one-hot
+                    tgt = torch.zeros_like(score_logp)
+                    tgt.scatter_(1, batch["score_bin"][:, None], 1.0)
+                    tgt_cdf = tgt.cumsum(dim=1)
+                score_cdf_loss = ((score_logp.exp().cumsum(dim=1) - tgt_cdf)
+                                  ** 2).mean()
+            else:
+                score_pdf_loss = torch.zeros((), device=self.device)
+                score_cdf_loss = torch.zeros((), device=self.device)
 
             loss = (self.cfg.policy_weight * policy_loss
                     + self.cfg.value_weight * value_loss

@@ -121,7 +121,8 @@ def transform_sample(smp: Dict[str, np.ndarray], b: int,
     _transform_pi(out, b, fwd, inv)
     out["mask"] = _transform_mask(out["mask"], b, fwd)
     out["aux_mask"] = _transform_mask(out["aux_mask"], b, fwd)
-    out["own"] = out["own"][inv]
+    if "own" in out:                       # absent in supervised samples
+        out["own"] = out["own"][inv]
     if int(out["aux_idx"]) != n:
         out["aux_idx"] = np.int64(fwd[int(out["aux_idx"])])
     # wdl / score_bin / aux_w invariant
