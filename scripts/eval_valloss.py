@@ -59,7 +59,7 @@ def main() -> int:
     torch.cuda.synchronize()
     t0 = time.time()
     ev0.record()
-    with torch.no_grad():
+    with torch.no_grad(), tr._autocast():
         for bt in batches:
             out = tr.model(bt["tokens"], bt["mask"], bt["aux_mask"])
 

@@ -125,7 +125,14 @@ class RopeAttention(nn.Module):
         k = apply_rope(k.view(B, T, self.h, self.dh).transpose(1, 2),
                        b, self.pairs, self.lam0)
         v = v.view(B, T, self.h, self.dh).transpose(1, 2)
-        out = F.scaled_dot_product_attention(q, k, v)
+        if q.is_cuda:
+            # flash never materializes the T×T scores; the math fallback
+            # needs B·h·T² bf16 live (17 GB/layer at B=8192) — OOM/hang
+            from torch.nn.attention import SDPBackend, sdpa_kernel
+            with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+                out = F.scaled_dot_product_attention(q, k, v)
+        else:
+            out = F.scaled_dot_product_attention(q, k, v)
         return self.proj(out.transpose(1, 2).contiguous().view(B, T, -1))
 
 
