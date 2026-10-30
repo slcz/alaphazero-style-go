@@ -40,6 +40,7 @@ class TrainConfig:
     score_pdf_weight: float = 0.02    # KataGo wspdf
     score_cdf_weight: float = 0.02    # KataGo wscdf
     grad_clip: Optional[float] = 1.0
+    weight_decay: float = 0.0
     bf16: bool = True              # CUDA autocast (no-op off CUDA)
     compile: bool = True           # torch.compile (CUDA only)
     device: str = "auto"
@@ -100,9 +101,11 @@ class Trainer:
         self._maybe_compile()
         try:                             # fused Adam: one update kernel
             self.opt = torch.optim.Adam(   # for all tensors (CUDA only)
-                model.parameters(), lr=cfg.lr, fused=self.device.type == "cuda")
+                model.parameters(), lr=cfg.lr, fused=self.device.type == "cuda",
+                weight_decay=cfg.weight_decay)
         except TypeError:                # older torch without `fused`
-            self.opt = torch.optim.Adam(model.parameters(), lr=cfg.lr)
+            self.opt = torch.optim.Adam(model.parameters(), lr=cfg.lr,
+                                        weight_decay=cfg.weight_decay)
         self.steps = 0
         torch.manual_seed(cfg.seed)
 

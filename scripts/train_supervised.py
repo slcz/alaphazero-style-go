@@ -103,6 +103,7 @@ def main() -> int:
                     help="data epochs when --steps is 0")
     ap.add_argument("--batch", type=int, default=512)
     ap.add_argument("--lr", type=float, default=2e-4)
+    ap.add_argument("--weight-decay", type=float, default=0.0)
     ap.add_argument("--val-frac", type=float, default=0.02)
     ap.add_argument("--val-every", type=int, default=500)
     ap.add_argument("--no-value", action="store_true",
@@ -145,7 +146,8 @@ def main() -> int:
                       score_cdf_weight=0.0,
                       value_weight=0.0 if args.no_value else 1.0,
                       aux_reply_weight=0.0 if args.no_aux else 0.15,
-                      grad_clip=1.0, compile=not args.no_compile)
+                      grad_clip=1.0, compile=not args.no_compile,
+                      weight_decay=args.weight_decay)
     if args.base_ckpt and Path(args.base_ckpt).exists():
         trainer = Trainer.load(args.base_ckpt, device=args.device)
         print(f"base: {args.base_ckpt}")
@@ -179,10 +181,19 @@ def main() -> int:
 
     pool = (ProcessPoolExecutor(max_workers=args.workers)
             if args.workers > 1 else None)
+    # without-replacement epochs: with-replacement draws memorize repeat
+    # positions before covering the set (observed: val top-1 peaked at
+    # ~0.2 epochs then slid while train acc climbed)
+    order = rng.permutation(len(train_rows))
+    cursor = 0
     for step in range(1, steps + 1):
-        pick = rng.integers(0, len(train_rows), size=args.batch)
-        syms = rng.integers(0, 8, size=args.batch)
-        tasks = [(int(pick[j]), int(syms[j])) for j in range(args.batch)]
+        if cursor + args.batch > len(order):
+            order = rng.permutation(len(train_rows))
+            cursor = 0
+        idx = order[cursor:cursor + args.batch]
+        cursor += args.batch
+        syms = rng.integers(0, 8, size=len(idx))
+        tasks = [(int(idx[j]), int(syms[j])) for j in range(len(idx))]
         if pool:
             samples = list(pool.map(_mp_sample, tasks, chunksize=16))
         else:
@@ -199,7 +210,7 @@ def main() -> int:
         if step % args.val_every == 0 or step == steps:
             p1, v1 = eval_val(trainer, val_games, val_rows, rng,
                               n=args.val_n)
-            print(f"step {step}/{args.steps} loss {m['loss']:.4f} "
+            print(f"step {step}/{steps} loss {m['loss']:.4f} "
                   f"policy {m['policy']:.4f} val top1 {p1:.3f} "
                   f"value {v1:.3f} ({time.time() - t0:.0f}s)", flush=True)
             history[-1]["val_policy_top1"] = p1
