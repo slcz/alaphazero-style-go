@@ -11,9 +11,9 @@ permission). Files already on disk are kept.
 from __future__ import annotations
 
 import argparse
-import subprocess
 import sys
 import urllib.request
+import zipfile
 from pathlib import Path
 
 # per-year game counts are part of the URL; the ones we use
@@ -44,8 +44,8 @@ def main() -> int:
         if not zpath.exists():
             print(f"fetching {url}", flush=True)
             urllib.request.urlretrieve(url, zpath)
-        subprocess.run(["unzip", "-q", "-o", str(zpath), "-d", str(out)],
-                       check=True)
+        with zipfile.ZipFile(zpath) as z:
+            z.extractall(out)
         zpath.unlink()
         n = len(list(dest.glob("*.sgf")))
         print(f"{dest.name}: {n} games")
