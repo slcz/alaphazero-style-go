@@ -127,7 +127,7 @@ class FP8Linear(nn.Module):
         self.scale = nn.Buffer((w.abs().amax() / 448.0).clamp(min=1e-12))
         self.wq = nn.Buffer((w / self.scale).clamp(-448, 448)
                             .to(torch.float8_e4m3fn))
-        self.one = nn.Buffer(torch.ones(()))       # scale_a, rides .to()
+        self.one = nn.Buffer(torch.ones((), device=w.device))  # scale_a
         # bf16 bias: an fp32 bias would promote _scaled_mm's bf16 output
         # to fp32 and break the flash-attention dtype contract downstream
         self.bias = (nn.Parameter(linear.bias.data.to(torch.bfloat16))
