@@ -93,11 +93,31 @@ def setup(ckpt: str, device: str, rows: int, banks: int = 1) -> dict:
         out["mask"].append(s["m"].data_ptr())
         out["logp"].append(s["lp"].data_ptr())
         out["wdl"].append(s["w"].data_ptr())
-    # compile defaults on for the CUDA path (NN_COMPILE=0 disables)
-    if os.environ.get("NN_COMPILE", "1" if cuda else "0") == "1":
+    # CUDA inference: FP8 weights + static-shape compile. NN_B (board
+    # size) enables the fast path: one graph per size, waves always run
+    # at the full padded row count (tail rows are stale, sliced off on
+    # read-back). Without NN_B (GTP: sizes vary at runtime) the model
+    # stays bf16 with a dynamic-batch compile. NN_COMPILE=0 disables.
+    static = cuda and int(os.environ.get("NN_B", "0")) > 0 \
+        and os.environ.get("NN_COMPILE", "1") == "1"
+    if static:
+        from go_ai.net.model import to_fp8_
+        to_fp8_(model)
+        torch._dynamo.config.automatic_dynamic_shapes = False
+        T = int(os.environ["NN_B"]) ** 2
+        with torch.inference_mode(), torch.autocast("cuda",
+                                                    dtype=torch.bfloat16):
+            model(s["xd"], s["md"][:, :T + 1])     # eager prewarm: fp8 + rope
+            torch.cuda.synchronize()
+        model = torch.compile(model)
+        with torch.inference_mode(), torch.autocast("cuda",
+                                                    dtype=torch.bfloat16):
+            model(s["xd"], s["md"][:, :T + 1])     # compile warm
+            torch.cuda.synchronize()
+    elif cuda and os.environ.get("NN_COMPILE", "1") == "1":
         model = torch.compile(model, dynamic=True)   # variable batch n
     _S.update(model=model, device=device, cuda=cuda, sets=sets,
-              bf16=os.environ.get("NN_BF16", "1") == "1",
+              static=static, bf16=os.environ.get("NN_BF16", "1") == "1",
               adtype=(torch.float16 if os.environ.get("NN_AUTOCAST") == "fp16"
                       else torch.bfloat16))
     return out
@@ -135,6 +155,18 @@ def push(bank: int, n: int) -> int:
     _S["s_compute"].wait_event(ev_h2d)
     with torch.cuda.stream(_S["s_compute"]):
         with torch.inference_mode():
+            if _S.get("static"):
+                # padded full-width wave; tail rows are stale, sliced
+                # off at read-back below
+                with torch.autocast("cuda", dtype=_S["adtype"]):
+                    out = _S["model"](s["xd"], s["md"][:, :T + 1])
+                s["polf"][:n].zero_()
+                s["polf"][:n, :b * b + 1].copy_(
+                    out["policy_logp"][:n, :b * b + 1])
+                s["wdlf"][:n].copy_(
+                    torch.softmax(out["wdl"][:n].float(), dim=-1))
+                _S["ev_fwd"][bank].record(_S["s_compute"])
+                return n
             if _S.get("bf16", True):
                 with torch.autocast("cuda", dtype=_S["adtype"]):
                     out = _S["model"](s["xd"][:n, :T], s["md"][:n, :b * b + 1])

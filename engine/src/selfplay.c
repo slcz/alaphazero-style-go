@@ -188,7 +188,12 @@ int main(int argc, char **argv) {
         puct_set_walkers(handles[i], walkers);
     if (strcmp(device, "dummy") == 0)
         puct_zone_init(rows);        /* keep the built-in dummy evaluator */
-    else if (puct_attach_nn(ckpt, device, rows) != 0) {
+    else {
+        char nb[16];
+        snprintf(nb, sizeof nb, "%d", b);
+        setenv("NN_B", nb, 1);       // static-compile hint: nn_worker
+    }
+    if (strcmp(device, "dummy") != 0 && puct_attach_nn(ckpt, device, rows) != 0) {
         fprintf(stderr, "selfplay: puct_attach_nn failed\n");
         return 1;
     }    slots = xcalloc((size_t)pool, sizeof *slots);   /* live/ply/game_index
