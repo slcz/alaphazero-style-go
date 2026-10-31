@@ -1047,5 +1047,25 @@ static int node_pi_bar(const PuctGame *g, const PuctNode *r,
 }
 
 int puct_learn_pi(const PuctGame *g, uint16_t *moves, float *pi, int cap) {
-    return node_pi_bar(g, &g->nodes[g->root], moves, pi, cap);
+    int n = node_pi_bar(g, &g->nodes[g->root], moves, pi, cap);
+    if (getenv("PUCT_DEBUG_PI")) {          // dump root children once per ply
+        static int calls = 0;
+        const PuctNode *r = &g->nodes[g->root];
+        char v[6];
+        int b = puct_state(g)->b;
+        fprintf(stderr, "PIBAR call=%d rootvisits=%u children=%u\n",
+                calls, r->visits, r->n_children);
+        for (int i = 0; i < n; i++) {
+            const PuctNode *c = &g->nodes[r->first_child + i];
+            move_to_gtp(c->move, b, v);
+            fprintf(stderr,
+                    "PIBAR call=%d mv=%s prior=%.4f visits=%u "
+                    "qsum/visits=%+.4f pi=%.4f\n",
+                    calls, c->move == MOVE_PASS ? "pass" : v, c->prior,
+                    c->visits,
+                    c->visits ? c->value_sum / c->visits : 0.0, pi[i]);
+        }
+        calls++;
+    }
+    return n;
 }
