@@ -2,6 +2,8 @@
 board-size adaptivity, score bins, checkpoint round trip."""
 import math
 
+import torch.nn as nn
+
 import pytest
 import torch
 
@@ -95,3 +97,53 @@ def test_checkpoint_round_trip(tmp_path):
     assert torch.allclose(o1["policy_logp"], o2["policy_logp"], atol=1e-6)
     assert torch.allclose(o1["own"], o2["own"], atol=1e-6)
     assert tr2.steps == tr.steps
+
+
+def test_fp8_linear_matches_reference():
+    from go_ai.net.model import FP8Linear
+    torch.manual_seed(0)
+    lin = nn.Linear(64, 32)
+    fp8 = FP8Linear(lin)
+    x = torch.randn(16, 64)
+    y, ref = fp8(x), lin(x)
+    rel = (y - ref).norm() / ref.norm()
+    assert rel < 0.05, f"fp8 rel err {rel:.3f}"
+
+
+def test_fp8_gonet_roundtrip(tmp_path):
+    from go_ai.net.model import GoNet
+    cfg = NetConfig(**{**TINY.__dict__, "fp8": True})
+    net = GoNet(cfg)
+    assert isinstance(net.blocks[0].attn.qkv.wq,
+                      torch.Tensor)
+    payload = {"model": net.state_dict(),
+               "net_config": dict(cfg.__dict__)}
+    p = tmp_path / "fp8.pt"
+    torch.save(payload, p)
+    net2 = GoNet(NetConfig(**payload["net_config"]))
+    net2.load_state_dict(payload["model"])
+    tok = torch.randn(2, 49, TINY.token_dim)
+    mask = torch.ones(2, 50, dtype=torch.bool)
+    out = net2(tok, mask, mask)
+    assert out["policy_logp"].shape == (2, 50)
+
+
+def test_legacy_conv_ffn_ckpt_loads(tmp_path):
+    """Pre-MLP checkpoints stored ff up/down as [out,in,1,1]; the load
+    shim squeezes them into the Linear weights (outputs identical)."""
+    from go_ai.train.trainer import Trainer, TrainConfig
+    torch.manual_seed(3)
+    tr = Trainer(GoNet(TINY), TrainConfig(device="cpu", compile=False))
+    tr.save(tmp_path / "a.pt")
+    payload = torch.load(tmp_path / "a.pt", weights_only=False)
+    for k in ("ff.up.weight", "ff.down.weight"):
+        for i in range(TINY.n_layers):
+            payload["model"][f"blocks.{i}.{k}"] = \
+                payload["model"][f"blocks.{i}.{k}"].unsqueeze(-1).unsqueeze(-1)
+    torch.save(payload, tmp_path / "legacy.pt")
+
+    tok = torch.randn(2, 49, TINY.token_dim)
+    mask = torch.ones(2, 50, dtype=torch.bool)
+    a = Trainer.load(tmp_path / "a.pt", device="cpu").model(tok, mask, mask)
+    b = Trainer.load(tmp_path / "legacy.pt", device="cpu").model(tok, mask, mask)
+    assert (a["policy_logp"] - b["policy_logp"]).abs().max() < 1e-5

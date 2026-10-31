@@ -5,12 +5,12 @@ engine's ChessTransformer; heads and RoPE are Go-specific).
     tokens [B, b*b, 18]                  (go_nn.h layout, C-encoded)
       │ input projection  Linear(18 → d)   (no absolute position embedding)
       ▼
-    8 × pre-LN encoder blocks
+    8 × encoder blocks
         ├─ LN → multi-head attention (8 heads): axial 2D RoPE on q/k
         │      (parameter-free; scores depend on (Δx, Δy) only)
-        └─ LN → conv FFN: 1x1 (d → 4d) → 3x3 depthwise → GELU
-                                    → 1x1 (4d → d)   (MBConv-style; the
-                                      depthwise adds a Go-locality prior)
+        └─ LN → up-GEMM (d → 4d) → 3x3 depthwise → GELU
+           → down-GEMM (4d → d) → residual  (channels-last dw: the
+             layout permutes are zero-copy views; fp8 GEMMs at inference)
       │ final LN
       ├─ policy head: Linear(d→1) per point + a pass logit from the
       │    mean-pool → b*b+1 logits (pass = slot b*b)
@@ -57,6 +57,7 @@ class NetConfig:
                               # pairs buy near-origin resolution (adjacent
                               # points), the long ones stay alias-free at 19
     rope_lambda: float = 8.0
+    fp8: bool = False         # E4M3 weight quantization (inference)
 
 
 # ---------------------------------------------------------------------------
@@ -66,20 +67,31 @@ class NetConfig:
 _rope_cache: dict = {}
 
 
-def _rope_tables(b: int, pairs: int, lam0: float, device, dtype):
-    key = (b, pairs, lam0, str(device), dtype)
+def _rope_tables(b: int, pairs: int, lam0: float, device, dtype, d_head: int):
+    """Full-width tables [b*b, d_head]: cos/sin per dim; passthrough dims
+    carry (1, 0). Within a bank the sign is folded into sin so the
+    rotation reduces to x·cos + roll(x)·sin (no cat, no per-pair loop)."""
+    key = (b, pairs, lam0, str(device), dtype, d_head)
     t = _rope_cache.get(key)
     if t is None:
-        idx = torch.arange(b * b, device=device, dtype=torch.float64)
-        x = idx % b
-        y = idx // b
-        theta = 2 * math.pi / (lam0 * 2.0 ** torch.arange(pairs,
-                                                          device=device))
-        # [b*b, 2*pairs]: x bank then y bank
+        # built on CPU in float64 (exact); MPS has no float64 — the
+        # tables are tiny and cached, the move is free
+        idx = torch.arange(b * b, dtype=torch.float64)
+        x, y = idx % b, idx // b
+        theta = 2 * math.pi / (lam0 * 2.0 ** torch.arange(pairs))
         ang = torch.cat(
             [x[:, None] * theta[None, :], y[:, None] * theta[None, :]],
-            dim=1)
-        t = (ang.cos().to(dtype), ang.sin().to(dtype))
+            dim=1)                                     # [T, 2p]
+        c = torch.ones(b * b, d_head, dtype=torch.float64)
+        s = torch.zeros(b * b, d_head, dtype=torch.float64)
+        p = pairs
+        for m in (0, 1):                               # build-time only
+            a = ang[:, m * p:(m + 1) * p]
+            sl = slice(m * 2 * p, m * 2 * p + 2 * p)
+            c[:, sl] = torch.cat([a.cos(), a.cos()], dim=1)
+            s[:, sl] = torch.cat([-a.sin(), a.sin()], dim=1)
+        t = (c.to(device=device, dtype=dtype),
+             s.to(device=device, dtype=dtype))
         _rope_cache[key] = t
     return t
 
@@ -90,14 +102,91 @@ def apply_rope(x: torch.Tensor, b: int, pairs: int, lam0: float) -> torch.Tensor
     the rest is unrotated content. q and k use the same tables."""
     assert 4 * pairs <= x.shape[-1], "axial RoPE needs 4·pairs ≤ d_head"
     p = pairs
-    cos, sin = _rope_tables(b, p, lam0, x.device, x.dtype)
-    banks = []
-    for m in range(2):
-        xb = x[..., m * 2 * p:(m + 1) * 2 * p]
-        x1, x2 = xb.chunk(2, dim=-1)
-        cb, sb = cos[:, m * p:(m + 1) * p], sin[:, m * p:(m + 1) * p]
-        banks.append(torch.cat([x1 * cb - x2 * sb, x2 * cb + x1 * sb], dim=-1))
-    return torch.cat(banks + [x[..., 4 * p:]], dim=-1)
+    cos, sin = _rope_tables(b, p, lam0, x.device, x.dtype, x.shape[-1])
+    # out = x·cos + roll_within_bank(x)·sin — 4-5 kernels total; the two
+    # banks form a (2, 2p) view so one roll rotates each independently
+    out = x * cos
+    x4 = x[..., :4 * p].unflatten(-1, (2, 2 * p))
+    out[..., :4 * p] += (x4.roll(p, dims=-1)
+                         * sin[..., :4 * p].unflatten(-1, (2, 2 * p))
+                         ).flatten(-2)
+    return out
+
+
+class FP8Linear(nn.Module):
+    """E4M3 weight-quantized linear. CUDA computes through _scaled_mm
+    with FP8 activations: x is cast DIRECTLY (scale_a = 1) — every
+    quantized linear consumes LN-bounded input (|x| <= sqrt(T) ~ 19,
+    far under E4M3's 448), so no activation scale or clamp is needed;
+    fp8 relative precision is scale-invariant. Elsewhere a dequantized
+    matmul runs as the reference path (tests, MPS)."""
+
+    def __init__(self, linear: nn.Linear):
+        super().__init__()
+        w = linear.weight.data.float()
+        self.scale = nn.Buffer((w.abs().amax() / 448.0).clamp(min=1e-12))
+        self.wq = nn.Buffer((w / self.scale).clamp(-448, 448)
+                            .to(torch.float8_e4m3fn))
+        self.one = nn.Buffer(torch.ones((), device=w.device))  # scale_a
+        # bf16 bias: an fp32 bias would promote _scaled_mm's bf16 output
+        # to fp32 and break the flash-attention dtype contract downstream
+        self.bias = (nn.Parameter(linear.bias.data.to(torch.bfloat16))
+                     if linear.bias is not None else None)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        shape = x.shape
+        x2 = x.reshape(-1, shape[-1])
+        if x2.is_cuda:
+            # cast saturating-free: inputs are LN-bounded (see class doc)
+            xq = x2.to(torch.float8_e4m3fn)
+            y = torch._scaled_mm(xq, self.wq.t(), scale_a=self.one,
+                                 scale_b=self.scale, bias=self.bias,
+                                 out_dtype=torch.bfloat16,
+                                 use_fast_accum=True)
+        else:
+            # non-CUDA (M4 play, CPU tests): dequant to bf16 once — the
+            # FP8 checkpoint then runs as a plain bf16 network
+            wdq = getattr(self, "_wdq", None)
+            if wdq is None or wdq.device != x2.device:
+                wdq = (self.wq.to(torch.bfloat16)
+                       * self.scale.to(torch.bfloat16))
+                object.__setattr__(self, "_wdq", wdq)   # cache only
+            y = F.linear(x2.to(wdq.dtype), wdq, self.bias)
+        # keep the stream dtype stable (fp32 tests, bf16 serving)
+        return y.reshape(*shape[:-1], -1).to(x2.dtype)
+
+
+def to_fp8_(root: nn.Module) -> None:
+    """Quantize Linear weights to E4M3 where cuBLASLt allows it (K and N
+    multiples of 16 — the token projection and the d→1 head projections
+    stay bf16); the depthwise conv and norms stay as-is."""
+    for name, child in root.named_children():
+        if isinstance(child, nn.Linear):
+            if child.in_features % 16 == 0 and child.out_features % 16 == 0:
+                setattr(root, name, FP8Linear(child))
+        else:
+            to_fp8_(child)
+
+
+def to_half_(root: nn.Module) -> None:
+    """Replace FP8Linears with plain fp16 Linears (dequantized once).
+    Non-CUDA targets (MPS) cannot hold the fp8 dtype at all, and MPS
+    bf16 matmul asserts on the fused bias — fp16 is the stable fast
+    path (same 2x rate). Conversion happens on CPU at load time."""
+
+    def conv(m: FP8Linear) -> nn.Linear:
+        lin = nn.Linear(m.wq.shape[1], m.wq.shape[0], bias=m.bias is not None)
+        with torch.no_grad():
+            lin.weight.data = (m.wq.float() * m.scale).to(torch.float16)
+            if m.bias is not None:
+                lin.bias.data = m.bias.data
+        return lin
+
+    for name, child in root.named_children():
+        if isinstance(child, FP8Linear):
+            setattr(root, name, conv(child))
+        else:
+            to_half_(child)
 
 
 class RopeAttention(nn.Module):
@@ -125,33 +214,45 @@ class RopeAttention(nn.Module):
         k = apply_rope(k.view(B, T, self.h, self.dh).transpose(1, 2),
                        b, self.pairs, self.lam0)
         v = v.view(B, T, self.h, self.dh).transpose(1, 2)
-        out = F.scaled_dot_product_attention(q, k, v)
+        if q.is_cuda and not torch.compiler.is_compiling():
+            # flash never materializes the T×T scores; the math fallback
+            # needs B·h·T² bf16 live (17 GB/layer at B=8192) — OOM/hang.
+            # under compile the context breaks dynamo's fake-tensor
+            # dispatch — inductor picks flash itself
+            from torch.nn.attention import SDPBackend, sdpa_kernel
+            with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+                out = F.scaled_dot_product_attention(q, k, v)
+        else:
+            out = F.scaled_dot_product_attention(q, k, v)
         return self.proj(out.transpose(1, 2).contiguous().view(B, T, -1))
 
 
 class ConvFFN(nn.Module):
-    """MBConv-style FFN: the usual up/down projections as 1x1 convs with
-    a 3x3 depthwise conv between them — a Go-locality prior (contacts,
-    liberties, captures) in the residual branch. The depthwise adds only
-    9·d_ff params and ~2% FLOPs per layer; size-agnostic (padding=1
-    slides over any board, zero border padding matches the edge-distance
-    features). Zero-init projection: the branch starts as the identity."""
+    """MBConv-style FFN: up/down MLP linears, 3x3 depthwise conv between
+    them (the Go-locality prior; ~2% of FLOPs). The dw conv runs
+    channels_last so the [B,N,C] <-> [B,C,H,W] transitions are zero-copy
+    views — and under torch.compile the surrounding norm/cast/GELU fuse
+    into neighbor kernels. Zero-init down: the branch starts as the
+    identity."""
 
     def __init__(self, d_model: int, d_ff: int):
         super().__init__()
-        self.up = nn.Conv2d(d_model, d_ff, 1)
+        self.up = nn.Linear(d_model, d_ff)
         self.dw = nn.Conv2d(d_ff, d_ff, 3, padding=1, groups=d_ff)
-        self.down = nn.Conv2d(d_ff, d_model, 1)
+        self.dw.to(memory_format=torch.channels_last)
+        self.down = nn.Linear(d_ff, d_model)
         nn.init.zeros_(self.down.weight)
         nn.init.zeros_(self.down.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        B, T, C = x.shape
-        b = math.isqrt(T)
-        h = x.transpose(1, 2).reshape(B, C, b, b)
-        h = F.gelu(self.dw(self.up(h)))
-        h = self.down(h)
-        return h.reshape(B, C, T).transpose(1, 2)
+        B, N, C = x.shape
+        b = math.isqrt(N)
+        h = self.up(x).view(B, b, b, -1).permute(0, 3, 1, 2)
+        h = F.gelu(F.conv2d(h, self.dw.weight.to(h.dtype),
+                            self.dw.bias.to(h.dtype), padding=1,
+                            groups=self.dw.groups))
+        h = h.permute(0, 2, 3, 1).reshape(B, N, -1)
+        return self.down(h)
 
 
 class EncoderBlock(nn.Module):
@@ -268,6 +369,8 @@ class GoNet(nn.Module):
         self.own = OwnershipHead(cfg.d_model)
         self.score = ScoreHead(cfg.d_model)
         self.aux = PolicyHead(cfg.d_model) if cfg.aux_reply else None
+        if cfg.fp8:
+            to_fp8_(self)
 
     def trunk(self, tokens: torch.Tensor) -> torch.Tensor:
         x = self.input_proj(tokens)

@@ -26,12 +26,15 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from go_ai.net.model import GoNet, NetConfig
+from go_ai.net.model import GoNet, NetConfig, to_half_
 
 
 @dataclass
 class TrainConfig:
     lr: float = 3e-4
+    optimizer: str = "adam"           # "adam" | "muon" (muon: lr is the
+                                      # Muon lr, hidden 2D matrices only)
+    adam_lr: float = 2e-4             # non-Muon params when optimizer=muon
     batch_size: int = 256
     value_weight: float = 1.0
     policy_weight: float = 1.0
@@ -99,13 +102,31 @@ class Trainer:
         self.model = model.to(self.device)
         self._raw_model = model          # unwrapped: state_dict stays clean
         self._maybe_compile()
-        try:                             # fused Adam: one update kernel
-            self.opt = torch.optim.Adam(   # for all tensors (CUDA only)
-                model.parameters(), lr=cfg.lr, fused=self.device.type == "cuda",
-                weight_decay=cfg.weight_decay)
-        except TypeError:                # older torch without `fused`
-            self.opt = torch.optim.Adam(model.parameters(), lr=cfg.lr,
-                                        weight_decay=cfg.weight_decay)
+        params = list(model.parameters())
+        if cfg.optimizer == "muon":
+            mu = [p for p in params
+                  if p.dim() == 2 and min(p.shape) >= 64]
+            mu_ids = {id(p) for p in mu}
+            ad = [p for p in params if id(p) not in mu_ids]
+            self.opt = torch.optim.Muon(mu, lr=cfg.lr,
+                                        weight_decay=cfg.weight_decay,
+                                        adjust_lr_fn="original")
+            try:                         # fused Adam: one update kernel
+                self.opt_adam = torch.optim.Adam(
+                    ad, lr=cfg.adam_lr, fused=self.device.type == "cuda",
+                    weight_decay=cfg.weight_decay)
+            except TypeError:
+                self.opt_adam = torch.optim.Adam(ad, lr=cfg.adam_lr,
+                                                 weight_decay=cfg.weight_decay)
+        else:
+            try:                         # fused Adam: one update kernel
+                self.opt = torch.optim.Adam(   # for all tensors (CUDA only)
+                    params, lr=cfg.lr, fused=self.device.type == "cuda",
+                    weight_decay=cfg.weight_decay)
+            except TypeError:            # older torch without `fused`
+                self.opt = torch.optim.Adam(model.parameters(), lr=cfg.lr,
+                                            weight_decay=cfg.weight_decay)
+            self.opt_adam = None
         self.steps = 0
         torch.manual_seed(cfg.seed)
 
@@ -207,6 +228,8 @@ class Trainer:
         n = batch["tokens"].shape[0]
         starts = list(range(0, n, micro or n))
         self.opt.zero_grad(set_to_none=True)
+        if self.opt_adam is not None:
+            self.opt_adam.zero_grad(set_to_none=True)
         acc = None
         for s in starts:
             e = s + (micro or n)
@@ -223,6 +246,8 @@ class Trainer:
             torch.nn.utils.clip_grad_norm_(self.model.parameters(),
                                            self.cfg.grad_clip)
         self.opt.step()
+        if self.opt_adam is not None:
+            self.opt_adam.step()
         self.steps += 1
         return {k: (v / n).item() for k, v in acc.items()}
 
@@ -259,6 +284,8 @@ class Trainer:
         payload = {
             "model": self._raw_model.state_dict(),
             "optimizer": self.opt.state_dict(),
+            "optimizer_adam": (self.opt_adam.state_dict()
+                               if self.opt_adam is not None else None),
             "steps": self.steps,
             "config": asdict(self.cfg),
             "net_config": asdict(self._raw_model.cfg),
@@ -281,11 +308,23 @@ class Trainer:
                                # require a build toolchain
         if model is None:
             model = GoNet(NetConfig(**payload["net_config"]))
-        model.load_state_dict(payload["model"], strict=strict)
+        # pre-MLP checkpoints stored ff up/down as 1x1-conv [out,in,1,1]
+        sd = {k: (v.squeeze(-1).squeeze(-1) if v.dim() == 4
+                  and k.endswith(("ff.up.weight", "ff.down.weight")) else v)
+              for k, v in payload["model"].items()}
+        model.load_state_dict(sd, strict=strict)
+        # fp8 tensors cannot move to MPS/CPU backends — ship them bf16:
+        # dequantize the FP8 linears and run the whole network bf16
+        if payload["net_config"].get("fp8") \
+                and torch.device(cfg.device).type != "cuda":
+            to_half_(model)
+            model.to(torch.float16)
         trainer = cls(model, cfg)
-        if strict:
+        if strict and payload.get("optimizer"):
             trainer.opt.load_state_dict(payload["optimizer"])
-        else:
+            if trainer.opt_adam is not None and payload.get("optimizer_adam"):
+                trainer.opt_adam.load_state_dict(payload["optimizer_adam"])
+        elif strict:
             print("[trainer] optimizer state not restored (new params)")
         trainer.steps = payload["steps"]
         return trainer
