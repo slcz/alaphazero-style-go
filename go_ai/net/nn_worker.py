@@ -107,12 +107,12 @@ def setup(ckpt: str, device: str, rows: int, banks: int = 1) -> dict:
         T = int(os.environ["NN_B"]) ** 2
         with torch.inference_mode(), torch.autocast("cuda",
                                                     dtype=torch.bfloat16):
-            model(s["xd"], s["md"][:, :T + 1])     # eager prewarm: fp8 + rope
+            model(s["xd"][:, :T], s["md"][:, :T + 1])  # eager prewarm
             torch.cuda.synchronize()
         model = torch.compile(model)
         with torch.inference_mode(), torch.autocast("cuda",
                                                     dtype=torch.bfloat16):
-            model(s["xd"], s["md"][:, :T + 1])     # compile warm
+            model(s["xd"][:, :T], s["md"][:, :T + 1])  # compile warm
             torch.cuda.synchronize()
     elif cuda and os.environ.get("NN_COMPILE", "1") == "1":
         model = torch.compile(model, dynamic=True)   # variable batch n
@@ -159,7 +159,8 @@ def push(bank: int, n: int) -> int:
                 # padded full-width wave; tail rows are stale, sliced
                 # off at read-back below
                 with torch.autocast("cuda", dtype=_S["adtype"]):
-                    out = _S["model"](s["xd"], s["md"][:, :T + 1])
+                    out = _S["model"](s["xd"][:, :T],
+                                      s["md"][:, :T + 1])
                 s["polf"][:n].zero_()
                 s["polf"][:n, :b * b + 1].copy_(
                     out["policy_logp"][:n, :b * b + 1])
