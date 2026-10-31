@@ -49,18 +49,24 @@ static int python_init(void) {
  * fn. */
 int puct_attach_nn(const char *ckpt, const char *device, int rows) {
     python_init();
+    fprintf(stderr, "ATTACH: python_init ok\n");
     puct_zone_init(rows);
 
     PyGILState_STATE st = PyGILState_Ensure();
     PyObject *mod = PyImport_ImportModule("go_ai.net.nn_worker");
+    fprintf(stderr, "ATTACH: import %s\n", mod ? "ok" : "FAIL");
     if (!mod) {
         PyErr_Print();
         PyGILState_Release(st);
         return -1;
     }
+    fprintf(stderr, "ATTACH: calling setup rows=%d banks=%d\n", rows,
+            PUCT_BANKS);
     PyObject *res =
         PyObject_CallMethod(mod, "setup", "(ssii)", ckpt, device, rows,
                             PUCT_BANKS);
+    fprintf(stderr, "ATTACH: setup returned %s\n",
+            res ? (PyDict_Check(res) ? "dict" : "non-dict") : "NULL");
     if (!res) {
         PyErr_Print();
         Py_DECREF(mod);
