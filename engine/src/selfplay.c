@@ -131,12 +131,12 @@ static int slot_record_ply(Slot *s, uint8_t mover, uint16_t move,
 }
 
 int main(int argc, char **argv) {
-    if (argc < 4 || argc > 16) {
+    if (argc < 4 || argc > 17) {
         fprintf(stderr,
                 "usage: %s <ckpt> <out_dir> <games> [b=7] [komi=9.5]\n"
                 "          [sims=200] [pool=1024] [rows=2048] [sample_plys=10]\n"
                 "          [max_plys=150] [block_mb=4] [device=mps] [seed=1]\n"
-                "          [fast_sims=0] [fast_p=0.75]\n"
+                "          [fast_sims=0] [fast_p=0.75] [no_pass_plies=0]\n"
                 "       device \"dummy\" runs the stub evaluator (no net)\n",
                 argv[0]);
         return 2;
@@ -158,6 +158,7 @@ int main(int argc, char **argv) {
     uint64_t seed = argc > 13 ? strtoull(argv[13], NULL, 10) : 1;
     int fast_sims = argc > 14 ? atoi(argv[14]) : 0;
     double fast_p = argc > 15 ? atof(argv[15]) : 0.75;
+    int no_pass_plies = argc > 16 ? atoi(argv[16]) : 0;
     if (games < 1 || sims < 1 || pool < 1 || b < 2 || b > GO_MAX_B) {
         fprintf(stderr, "selfplay: bad args\n");
         return 2;
@@ -251,6 +252,19 @@ int main(int argc, char **argv) {
             float pprobs[SP_PI_MAX];
             uint16_t pmoves[SP_PI_MAX];
             int n_pi = puct_learn_pi(g, pmoves, pprobs, SP_PI_MAX);
+            /* a random-value net ranks pass arbitrarily high on empty
+             * boards — games collapse to mutual passes. Forbid pass for
+             * the opening window so every game contains real play */
+            if (no_pass_plies > 0 && s->ply < no_pass_plies &&
+                n_pi > 0 && pmoves[n_pi - 1] == MOVE_PASS) {
+                n_pi--;              /* pass is the last entry */
+                double tot = 0.0;
+                for (int i = 0; i < n_pi; i++)
+                    tot += pprobs[i];
+                if (tot > 0)
+                    for (int i = 0; i < n_pi; i++)
+                        pprobs[i] = (float)(pprobs[i] / tot);
+            }
             int window = sample_plys > 0 ? sample_plys : max_plys;
             Move mv = match_pick_move(pmoves, NULL, pprobs, n_pi, s->ply,
                                       window, true, 1.0, 0);
