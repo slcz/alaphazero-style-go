@@ -39,6 +39,7 @@ def main() -> int:
     ap.add_argument("--epochs", type=int, default=1)
     ap.add_argument("--batch", type=int, default=512)
     ap.add_argument("--lr", type=float, default=2e-4)
+    ap.add_argument("--opt", choices=("adam", "muon"), default="muon")
     ap.add_argument("--device", default="auto")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--log-every", type=int, default=50)
@@ -66,7 +67,7 @@ def main() -> int:
     else:
         model = GoNet(NetConfig())
         cfg = TrainConfig(lr=args.lr, batch_size=args.batch,
-                          device=args.device, seed=args.seed)
+                          device=args.device, seed=args.seed, optimizer=args.opt)
         trainer = Trainer(model, cfg)
         print(f"random init ({sum(p.numel() for p in model.parameters()):,} "
               f"params)", flush=True)

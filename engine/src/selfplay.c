@@ -181,6 +181,11 @@ int main(int argc, char **argv) {
         fprintf(stderr, "selfplay: mux_new failed\n");
         return 1;
     }
+    /* walkers per game: PUCT_WALKERS, default 8 (same env as engine_mux) */
+    const char *wenv = getenv("PUCT_WALKERS");
+    int walkers = wenv ? atoi(wenv) : 8;
+    for (int i = 0; i < pool; i++)
+        puct_set_walkers(handles[i], walkers);
     if (strcmp(device, "dummy") == 0)
         puct_zone_init(rows);        /* keep the built-in dummy evaluator */
     else if (puct_attach_nn(ckpt, device, rows) != 0) {
