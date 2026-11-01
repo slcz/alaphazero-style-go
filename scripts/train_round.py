@@ -28,7 +28,8 @@ sys.path.insert(0, str(REPO))
 from go_ai.net.model import GoNet, NetConfig
 from go_ai.selfplay.shard import read_unit
 from go_ai.train.selfplay_data import K, selfplay_sample, trainable_plies
-from go_ai.train.trainer import Trainer, TrainConfig, tensors_to_torch
+from go_ai.train.trainer import (Trainer, TrainConfig, resolve_device,
+                                 tensors_to_torch)
 
 
 def main() -> int:
@@ -39,10 +40,13 @@ def main() -> int:
     ap.add_argument("--epochs", type=int, default=1)
     ap.add_argument("--batch", type=int, default=512)
     ap.add_argument("--lr", type=float, default=2e-4)
-    ap.add_argument("--opt", choices=("adam", "muon"), default="muon")
+    ap.add_argument("--adam-lr", type=float, default=2e-4,
+                    help="companion AdamW lr for non-Muon params")
     ap.add_argument("--device", default="auto")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--log-every", type=int, default=50)
+    ap.add_argument("--save-every", type=int, default=500,
+                    help="checkpoint to <out>-ck.pt every N steps")
     ap.add_argument("--json", default=None)
     args = ap.parse_args()
 
@@ -62,19 +66,28 @@ def main() -> int:
           f"steps={steps} (8x D4 aug, batch {args.batch})", flush=True)
 
     if args.base_ckpt and Path(args.base_ckpt).exists():
-        trainer = Trainer.load(args.base_ckpt, device=args.device)
-        print(f"base: {args.base_ckpt} (steps {trainer.steps})", flush=True)
+        dev = resolve_device(args.device)   # returns a device STRING
+        trainer = Trainer.load(
+            args.base_ckpt, device=args.device,
+            cfg_overrides=dict(lr=args.lr, batch_size=args.batch,
+                               adam_lr=args.adam_lr, seed=args.seed,
+                               compile=str(dev).startswith("cuda")))
+        print(f"base: {args.base_ckpt} (steps {trainer.steps}) — "
+              f"muon lr={trainer.cfg.lr} "
+              f"batch={trainer.cfg.batch_size} compile={trainer.cfg.compile}",
+              flush=True)
     else:
         model = GoNet(NetConfig())
         cfg = TrainConfig(lr=args.lr, batch_size=args.batch,
-                          device=args.device, seed=args.seed, optimizer=args.opt)
+                          device=args.device, seed=args.seed)
         trainer = Trainer(model, cfg)
         print(f"random init ({sum(p.numel() for p in model.parameters()):,} "
               f"params)", flush=True)
 
     rng = np.random.default_rng(args.seed)
     b = games[0].b
-    proto = selfplay_sample(games[0], rows[0][1])   # per-sample shapes
+    gi0, i0 = rows[0]        # game 0 may have no trainable (slow-cap) plies
+    proto = selfplay_sample(games[gi0], i0)   # per-sample shapes
     batch = {k: np.zeros((args.batch,) + v.shape, v.dtype)
              for k, v in proto.items()}
     history = []
@@ -88,6 +101,8 @@ def main() -> int:
                 batch[k][j] = v
         m = trainer.train_step(tensors_to_torch(batch, trainer.device))
         history.append(m)
+        if args.save_every and (step + 1) % args.save_every == 0:
+            trainer.save(Path(args.out).with_suffix(".ck.pt"))
         if (step + 1) % args.log_every == 0 or step == steps - 1:
             print(f"step {step + 1}/{steps} loss {m['loss']:.4f} "
                   f"policy {m['policy']:.4f} (acc {m['policy_acc']:.3f}) "

@@ -117,6 +117,7 @@ def setup(ckpt: str, device: str, rows: int, banks: int = 1) -> dict:
     elif cuda and os.environ.get("NN_COMPILE", "1") == "1":
         model = torch.compile(model, dynamic=True)   # variable batch n
     _S.update(model=model, device=device, cuda=cuda, sets=sets,
+              rows_cap=rows,
               static=static, bf16=os.environ.get("NN_BF16", "1") == "1",
               adtype=(torch.float16 if os.environ.get("NN_AUTOCAST") == "fp16"
                       else torch.bfloat16))
@@ -134,6 +135,18 @@ def push(bank: int, n: int) -> int:
     s = _S["sets"][bank]
     b = _active_b(bank, n)
     T = b * b                  # active tokens
+    if os.environ.get("NN_WAVE_STATS"):
+        import sys, time
+        _w = _S.setdefault("waves", [0, 0, 10**9, 0, 0.0])
+        _w[0] += 1; _w[1] += n
+        _w[2] = min(_w[2], n); _w[3] = max(_w[3], n)
+        _w[4] = time.time()
+        if _w[0] % 50 == 0:
+            cap = _S.get("rows_cap", 0)
+            fill = _w[1] / _w[0] / cap * 100 if cap else 0.0
+            print(f"WAVES t={_w[4]:.1f} n={_w[0]} rows={_w[1]} "
+                  f"min={_w[2]} max={_w[3]} mean={_w[1]/_w[0]:.0f} "
+                  f"fill={fill:.0f}%", file=sys.stderr, flush=True)
     if not _S["cuda"]:
         # synchronous backend: the whole forward at push
         with torch.inference_mode():

@@ -210,6 +210,8 @@ int main(int argc, char **argv) {
     }
 
     uint32_t finished = 0, next_game = 0;
+    double depth_sum = 0;          /* global search-depth aggregate */
+    uint32_t depth_thinks = 0, depth_max = 0;
     double t0 = now_s();
     while (finished < (uint32_t)games) {
         /* start (recycle) slots before the step so their first think is
@@ -243,6 +245,15 @@ int main(int argc, char **argv) {
             double wsum;
             puct_root_stats(g, &root_visits, &wsum);
             double outlook = root_visits ? -(wsum / root_visits) : 0.0;
+            {
+                double dmean;
+                uint32_t dmax;
+                puct_depth_stats(g, &dmean, &dmax);
+                depth_sum += dmean;
+                depth_thinks++;
+                if (dmax > depth_max)
+                    depth_max = dmax;
+            }
 
             /* π̄ is both the stored target and the play policy: sample it
              * for the first sample_plys plies, argmax after. puct_learn_pi
@@ -328,9 +339,10 @@ int main(int argc, char **argv) {
     }
     printf("SUMMARY games=%u b=%d komi=%.1f sims=%d fast_sims=%d "
            "fast_p=%.2f pool=%d rows=%d elapsed=%.1fs rate=%.2f games/s "
-           "oom=%llu compact=%llu\n",
+           "oom=%llu compact=%llu depth_mean=%.1f depth_max=%u\n",
            finished, b, komi, sims, fast_sims, fast_p, pool, rows, dt,
            dt > 0 ? finished / dt : 0.0,
-           (unsigned long long)oom, (unsigned long long)compact);
+           (unsigned long long)oom, (unsigned long long)compact,
+           depth_thinks ? depth_sum / depth_thinks : 0.0, depth_max);
     return 0;
 }

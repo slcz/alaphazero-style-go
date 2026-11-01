@@ -9,10 +9,11 @@
  * block whenever it fills.
  *
  * Node layout: W (value_sum) is stored in the PARENT-mover's view, so
- * selection is sign-free and backup flips the sign once per ply. Children
- * are created eagerly at expansion, contiguous in the block. The tree
- * persists across moves: puct_play makes the played child the new root
- * and keeps its subtree.
+ * selection is sign-free and backup flips the sign once per ply. A
+ * node's children are a contiguous edge array created eagerly at
+ * expansion; each edge becomes a node on first selection (see
+ * PuctEdge). The tree persists across moves: puct_play makes the
+ * played child the new root and keeps its subtree.
  *
  * Eval seam: requests are built entirely C-side (planes via nn_encode,
  * mask via gen_legal + go_policy_slot); the callback only runs the
@@ -36,24 +37,38 @@ extern "C" {
 #define PUCT_DEFAULT_BLOCK (64u << 20)   /* 64 MB node block per game      */
 #define PUCT_BANKS 2                 /* landing-zone banks (double buffer) */
 
-typedef struct PuctNode {    /* u32 handles only, no pointers (pack-safe) */
-    uint32_t parent;         /* block idx; 0 = none (root's parent) */
-    uint32_t first_child;    /* children contiguous; 0 = childless  */
-    uint32_t n_children;
+/* Children are ALWAYS a contiguous PuctEdge array (byte offset
+ * first_child in the game's block). An edge is a placeholder until a
+ * walker first selects it, at which point it is materialized: one
+ * PuctNode is allocated and the edge's child handle set. Nodes never
+ * move or merge after materialization (only compaction relocates
+ * them). Unvisited edges carry no stats — pi-bar falls back to the
+ * parent's value for them, as before. */
+typedef struct PuctEdge {    /* 8 bytes */
+    uint16_t move;
+    uint16_t prior_q;        /* P × 65535 (fixed point) */
+    uint32_t child;          /* byte offset of the materialized node; 0 = never visited */
+} PuctEdge;
+
+typedef struct PuctNode {    /* 20 bytes; u32 handles only (pack-safe) */
+    uint32_t parent;         /* byte offset; 0 = none (root's parent) */
+    uint32_t first_child;    /* byte offset of the PuctEdge array; 0 = childless */
     uint32_t visits;         /* N */
-    double   value_sum;      /* W, parent-mover's view */
-    float    prior;          /* P */
-    float    wdl[2];         /* terminal nodes only, mover's view [pW, pL] */
-    uint16_t move;           /* move from the parent */
+    float    value_sum;      /* W, parent-mover's view */
+    uint16_t n_children;     /* number of edges in the child array */
     uint8_t  flags;
     uint8_t  pad;
 } PuctNode;
+
+_Static_assert(sizeof(PuctNode) == 20 && sizeof(PuctEdge) == 8, "layout");
 
 #define PUCT_TERMINAL 1
 #define PUCT_PENDING 2           /* expand-at-park: children exist with
                                     uniform placeholder priors, closed for
                                     descent until the row delivers (walkers
                                     co-sleep; the real softmax fills in then) */
+#define PUCT_OUTC_WIN  4         /* terminal outcome, mover's view (both */
+#define PUCT_OUTC_LOSS 8         /* clear = draw; see set_terminal)     */
 
 typedef struct PuctGame PuctGame;
 
@@ -156,6 +171,10 @@ uint32_t    puct_compact_count(const PuctGame *g);
  * pending_parks. */
 void puct_park_stats(const PuctGame *g, uint32_t *parks,
                      uint32_t *terminal_hits, uint32_t *pending_parks);
+
+/* Per-think search depth: mean/max root→leaf descent depth (all walker
+ * exits; reset by the next fresh think). */
+void puct_depth_stats(const PuctGame *g, double *mean, uint32_t *max);
 
 const State *puct_state(const PuctGame *g);
 

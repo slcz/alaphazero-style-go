@@ -112,7 +112,10 @@ def ensure_done(unit_dir: Path, seed: int) -> bool:
 
 
 def generate(args, best: Path, unit_dir: Path, seed: int) -> int:
-    env = dict(os.environ, NN_BF16="1", NN_COMPILE="1")
+    # NN_B turns on the FP8 static-wave inference path (one graph per
+    # board size; see go_ai/net/nn_worker.py setup()).
+    env = dict(os.environ, NN_B=str(args.b),
+               NN_BF16="1", NN_COMPILE="1")
     cmd = [str(SELFPLAY), str(best), str(unit_dir), str(args.games),
            str(args.b), str(args.komi), str(args.sims), str(args.pool),
            str(args.rows), str(args.sample_plys), str(args.max_plys),
@@ -127,6 +130,7 @@ def train(args, unit_dirs: list[Path], base: Path, out: Path) -> int:
            "--base-ckpt", str(base), "--out", str(out),
            "--epochs", str(args.epochs), "--batch", str(args.batch),
            "--lr", str(args.lr), "--seed", str(args.seed),
+           "--log-every", "10",
            "--device", args.device, "--json", str(out.parent /
                                                    "train.json")]
     return pump(cmd, out.parent / "train.log")
@@ -134,15 +138,24 @@ def train(args, unit_dirs: list[Path], base: Path, out: Path) -> int:
 
 def gate(args, candidate: Path, best: Path, eval_json: Path) -> float | None:
     log_path = eval_json.with_suffix(".log")
+    # opening diversity: sample ∝ visits for the first N plies (the
+    # referee's 0-1 random moves alone would repeat openings)
+    env = dict(os.environ, PUCT_SAMPLE_PLYS=str(args.gate_sample_plys))
     cmd = [sys.executable, "scripts/gate_match.py",
            "--ckpt-a", str(candidate), "--ckpt-b", str(best),
            "--games", str(args.gate_games // 2),
            "--a-sims", str(args.gate_sims), "--b-sims", str(args.gate_sims),
            "--b", str(args.b), "--komi", str(args.komi),
-           "--max-plys", str(args.max_plys),
-           "--device", args.device, "--rows", str(args.rows),
-           "--json", str(eval_json)]
-    if pump(cmd, log_path) != 0:
+           "--max-plys", str(args.gate_max_plys),
+           "--resign", str(args.gate_resign),
+           "--device", args.device,
+           # rows per bank: walkers × games is the exact park bound —
+           # a 4096 landing zone would pad 5x per FP8 wave (gen's size)
+           "--rows", str(int(os.environ.get("PUCT_WALKERS", "4"))
+                         * (args.gate_games // 2)),
+           "--json", str(eval_json),
+           "--sgf-dir", str(eval_json.parent / "gate-sgf")]
+    if pump(cmd, log_path, env=env) != 0:
         return None
     if eval_json.exists():
         return float(json.loads(eval_json.read_text())["score_a"])
@@ -172,6 +185,11 @@ def main() -> int:
                          "weight (1 = newest only)")
     ap.add_argument("--gate-games", type=int, default=400)
     ap.add_argument("--gate-sims", type=int, default=200)
+    ap.add_argument("--gate-max-plys", type=int, default=200)
+    ap.add_argument("--gate-resign", type=float, default=0.0,
+                    help="mover-view loss value that resigns (0 = off)")
+    ap.add_argument("--gate-sample-plys", type=int, default=10,
+                    help="gate engines sample moves for this many plies")
     ap.add_argument("--adopt-min", type=float, default=0.5)
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--seed", type=int, default=1)
@@ -205,6 +223,7 @@ def main() -> int:
         ckpt = d / "train.pt"
         t0 = time.time()
 
+        games = count_games(unit)   # defined on every path (record below)
         if not ckpt.exists():
             ensure_done(unit, args.seed + it)
             games = count_games(unit)
@@ -232,22 +251,22 @@ def main() -> int:
             if rc != 0:
                 return rc
 
-        log(f"it{it}: gating {ckpt.name} against best.pt")
-        score = gate(args, ckpt, best, d / "eval.json")
-        if score is None:
-            log(f"it{it}: gate failed; keeping the current best")
-            adopted = False
+        # gate is EVAL-ONLY: the latest checkpoint always becomes the
+        # next iteration's base (no accept/reject decision).
+        eval_json = d / "eval.json"
+        if eval_json.exists():
+            score = float(json.loads(eval_json.read_text())["score_a"])
+            log(f"it{it}: reusing cached gate {score:.3f}")
         else:
-            adopted = score > args.adopt_min
-            if adopted:
-                shutil.copy(ckpt, work / "best.pt.next")
-                shutil.move(work / "best.pt.next", best)
-            log(f"it{it}: gate {score:.3f} -> "
-                f"{'ADOPTED' if adopted else 'kept previous best'}")
+            log(f"it{it}: gating {ckpt.name} against best.pt (eval only)")
+            score = gate(args, ckpt, best, eval_json)
+        shutil.copy(ckpt, work / "best.pt.next")
+        shutil.move(work / "best.pt.next", best)
+        log(f"it{it}: gate {'FAILED' if score is None else f'{score:.3f}'}"
+            f" -> promoted latest checkpoint")
 
         rec = {"iteration": it, "games": games, "epochs": args.epochs,
-               "gate_score": score, "adopted": adopted,
-               "adopt_min": args.adopt_min,
+               "gate_score": score,
                "elapsed_s": round(time.time() - t0),
                "ckpt": str(ckpt.relative_to(work)),
                "ckpt_sha256": sha256(ckpt) if ckpt.exists() else None,

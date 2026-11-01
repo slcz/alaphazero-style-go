@@ -107,6 +107,7 @@ struct PuctGame {
     int        sims_done;
     uint32_t   parks, terminal_hits;
     uint32_t   pending_parks;  /* parks that co-slept on a pending row */
+    uint32_t   desc_sum, desc_max, descents;  /* per-think sim depth */
 };
 
 /* Remap walkers whose pre-copy idx (snap) was old_idx to new_idx; the
@@ -126,59 +127,189 @@ static void *map_block(size_t bytes) {
 }
 static void unmap_block(void *p, size_t bytes) { (void)bytes; munmap(p, bytes); }
 
-/* Pack the root-reachable subtree into a fresh block (BFS, using the new
- * block as the queue), remapping parent/first_child and walker idx
- * fields; the old block is munmap'd. */
+/* PUCT_TREE_STATS=1: shape of the live tree at each compaction —
+ * width (fanout, visited children) and height (depth stats plus a
+ * per-depth histogram of expanded nodes; the last bucket is depth >=
+ * DH, visit-weighted mean depth is over all visited nodes). */
+static void tree_stats(const PuctNode *nb, uint32_t root, uint32_t used) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("PUCT_TREE_STATS");
+        on = e && *e && strcmp(e, "0");
+    }
+    if (!on)
+        return;
+    enum { DH = 48 };
+    uint64_t expanded = 0, multi = 0, anyv = 0, nodes_v = 0, nodes_v1 = 0;
+    uint64_t kids = 0, kids_v = 0, kids_term = 0;
+    uint64_t dsum = 0, vsum = 0, vwt = 0;
+    uint32_t dmax = 0;
+    uint32_t hist[DH + 1] = {0};
+    size_t qcap = used / sizeof(PuctNode) + 2;
+    const PuctNode **q = malloc(qcap * sizeof *q);
+    uint16_t *qd = malloc(qcap * sizeof *qd);
+    if (!q || !qd) {
+        free(q);
+        free(qd);
+        return;
+    }
+    size_t hd = 0, tl = 0;
+    q[tl] = (const PuctNode *)((const char *)nb + root);
+    qd[tl++] = 0;
+    while (hd < tl) {
+        const PuctNode *n = q[hd];
+        uint16_t d = qd[hd++];
+        if (n->visits) {
+            nodes_v++;
+            if (n->visits == 1)
+                nodes_v1++;
+            vsum += (uint64_t)n->visits * d;
+            vwt += n->visits;
+        }
+        if (!n->n_children)
+            continue;
+        expanded++;
+        dsum += d;
+        if (d > dmax)
+            dmax = d;
+        hist[d < DH ? d : DH]++;
+        const PuctEdge *E =
+            (const PuctEdge *)((const char *)nb + n->first_child);
+        uint32_t dv = 0;
+        for (uint32_t c = 0; c < n->n_children; c++) {
+            kids++;
+            if (E[c].child) {
+                const PuctNode *ch =
+                    (const PuctNode *)((const char *)nb + E[c].child);
+                if (ch->visits) {
+                    kids_v++;
+                    dv++;
+                }
+                if (ch->flags & PUCT_TERMINAL)
+                    kids_term++;
+                if (tl < qcap) {
+                    q[tl] = ch;
+                    qd[tl++] = (uint16_t)(d + 1);
+                }
+            }
+        }
+        if (dv >= 1)
+            anyv++;
+        if (dv >= 2)
+            multi++;
+    }
+    free(q);
+    free(qd);
+    fprintf(stderr,
+            "TREESTATS nodes=%llu expanded=%llu kids=%llu "
+            "kidvisits=%llu term=%llu | leaves/expanded=%.1f "
+            "visitedkids/expanded=%.2f p(>=1vis)=%.3f p(>=2vis)=%.3f "
+            "1visit=%.3f | dmean=%.1f dmax=%u dvmean=%.1f hist=",
+            (unsigned long long)nodes_v, (unsigned long long)expanded,
+            (unsigned long long)kids, (unsigned long long)kids_v,
+            (unsigned long long)kids_term,
+            expanded ? (double)(kids - kids_v) / expanded : 0.0,
+            expanded ? (double)kids_v / expanded : 0.0,
+            expanded ? (double)anyv / expanded : 0.0,
+            expanded ? (double)multi / expanded : 0.0,
+            nodes_v ? (double)nodes_v1 / nodes_v : 0.0,
+            expanded ? (double)dsum / expanded : 0.0, dmax,
+            vwt ? (double)vsum / vwt : 0.0);
+    for (int i = 0; i <= DH; i++)
+        fprintf(stderr, "%s%u", i ? "," : "", hist[i]);
+    fputc('\n', stderr);
+}
+
+/* The block is a byte arena: nodes (20B) and edge arrays (8B/edge)
+ * interleaved; handles are byte offsets, 0 = the sentinel node = none.
+ * Allocation may compact, which relocates everything — callers keep
+ * their cursor in a walker idx field (remapped by sleep_remap) and
+ * re-derive raw pointers after any alloc. */
+static PuctNode *node_at(PuctGame *g, uint32_t off) {
+    return (PuctNode *)((char *)g->nodes + off);
+}
+static const PuctNode *node_at_c(const PuctGame *g, uint32_t off) {
+    return (const PuctNode *)((const char *)g->nodes + off);
+}
+static PuctEdge *kids_of(PuctGame *g, const PuctNode *n) {
+    return (PuctEdge *)((char *)g->nodes + n->first_child);
+}
+static const PuctEdge *kids_of_c(const PuctGame *g, const PuctNode *n) {
+    return (const PuctEdge *)((const char *)g->nodes + n->first_child);
+}
+
+/* Pack the root-reachable subtree into a fresh block (BFS over a
+ * malloc'd offset queue), remapping parent/first_child/child handles
+ * and walker idx fields; the old block is munmap'd. */
 static bool compact(PuctGame *g) {
-    PuctNode *nb = map_block(g->block_bytes);
+    char *nb = map_block(g->block_bytes);
     if (!nb)
         return false;
-    const PuctNode *ob = g->nodes;
+    const char *ob = (const char *)g->nodes;
     /* pre-copy snapshot (see sleep_remap); never malloc(0) */
     uint32_t *snap = malloc((size_t)(g->n_walkers ? g->n_walkers : 1)
                             * sizeof *snap);
-    if (!snap) {
+    size_t qcap = g->used / sizeof(PuctNode) + 2;
+    uint32_t *q = malloc(qcap * sizeof *q);
+    if (!snap || !q) {
+        free(snap);
+        free(q);
         unmap_block(nb, g->block_bytes);
         return false;
     }
     for (int i = 0; i < g->n_walkers; i++)
         snap[i] = g->walkers[i].idx;
-    nb[0].n_children = 1;         /* the sentinel's one child IS the root: */
-    nb[0].first_child = g->root;  /* the BFS packs it like any other node */
-    size_t hd = 0, tl = 1;
+    size_t hd = 0, tl = 0;
+    uint32_t off = (uint32_t)sizeof(PuctNode);   /* 0 = sentinel */
+    memcpy(nb + off, ob + g->root, sizeof(PuctNode));
+    sleep_remap(g, snap, g->root, off);
+    ((PuctNode *)(nb + off))->parent = 0;
+    g->root = off;
+    q[tl++] = off;
+    off += (uint32_t)sizeof(PuctNode);
     while (hd < tl) {
-        uint32_t old_fc = nb[hd].first_child;
-        uint32_t n = nb[hd].n_children;
-        if (n > 0) {
-            memcpy(&nb[tl], &ob[old_fc], (size_t)n * sizeof(PuctNode));
-            nb[hd].first_child = (uint32_t)tl;
-            for (uint32_t i = 0; i < n; i++) {
-                sleep_remap(g, snap, old_fc + i, (uint32_t)tl + i);
-                nb[tl + i].parent = (uint32_t)hd;
-            }
-            tl += n;
+        PuctNode *cn = (PuctNode *)(nb + q[hd++]);
+        uint32_t n = cn->n_children;
+        if (n == 0)
+            continue;
+        uint32_t old_fc = cn->first_child;
+        uint32_t es = off;
+        memcpy(nb + es, ob + old_fc, (size_t)n * sizeof(PuctEdge));
+        cn->first_child = es;
+        off += n * (uint32_t)sizeof(PuctEdge);
+        PuctEdge *E = (PuctEdge *)(nb + es);
+        for (uint32_t i = 0; i < n; i++) {
+            if (E[i].child == 0)
+                continue;
+            memcpy(nb + off, ob + E[i].child, sizeof(PuctNode));
+            sleep_remap(g, snap, E[i].child, off);
+            ((PuctNode *)(nb + off))->parent = q[hd - 1];
+            E[i].child = off;
+            q[tl++] = off;
+            off += (uint32_t)sizeof(PuctNode);
         }
-        hd++;
     }
     free(snap);
+    free(q);
+    tree_stats((const PuctNode *)nb, g->root, off);
     unmap_block(g->nodes, g->block_bytes);
-    g->nodes = nb;
-    g->used = (uint32_t)tl;
-    g->root = 1;
+    g->nodes = (PuctNode *)nb;
+    g->used = off;
     g->compactions++;
     return true;
 }
 
-static uint32_t alloc_nodes(PuctGame *g, int n) {
-    if ((size_t)g->used + (size_t)n > g->cap &&
-        (!compact(g) || (size_t)g->used + (size_t)n > g->cap)) {
+static uint32_t alloc_bytes(PuctGame *g, size_t n) {
+    if (n > g->cap ||
+        ((size_t)g->used + n > g->cap &&
+         (!compact(g) || (size_t)g->used + n > g->cap))) {
         g->oom++;
         return 0;
     }
-    uint32_t idx = g->used;
-    memset(&g->nodes[idx], 0, (size_t)n * sizeof(PuctNode));
+    uint32_t off = g->used;
+    memset((char *)g->nodes + off, 0, n);
     g->used += (uint32_t)n;
-    return idx;
+    return off;
 }
 
 /* Terminal WDL from the strict TT score of the leaf position, in the
@@ -188,13 +319,19 @@ static void set_terminal(PuctNode *n, const State *st) {
     float score;
     state_termination(st, &score, NULL);
     n->flags |= PUCT_TERMINAL;
-    if (score == 0.0f) {
-        n->wdl[0] = 0.5f; n->wdl[1] = 0.5f;
-    } else if ((st->side == BLACK) == (score > 0.0f)) {
-        n->wdl[0] = 1.0f; n->wdl[1] = 0.0f;
-    } else {
-        n->wdl[0] = 0.0f; n->wdl[1] = 1.0f;
-    }
+    if (score != 0.0f)
+        n->flags |= (st->side == BLACK) == (score > 0.0f)
+                        ? PUCT_OUTC_WIN : PUCT_OUTC_LOSS;
+}
+
+/* Terminal backup value, mover's view. */
+static float terminal_value(const PuctNode *n) {
+    return (n->flags & PUCT_OUTC_WIN) ? 1.0f :
+           (n->flags & PUCT_OUTC_LOSS) ? -1.0f : 0.0f;
+}
+
+static double prior_of_q(uint16_t q) {   /* prior_q decode */
+    return (double)q / 65535.0;
 }
 
 /* ---- landing zone -------------------------------------------------------- */
@@ -389,8 +526,8 @@ static int deliver_bank(int b, PuctGame **games, int n_games) {
  * mmap'd block and the lifetime stats are kept. */
 static void game_fresh(PuctGame *g) {
     memset(g->nodes, 0, 2 * sizeof(PuctNode));
-    g->used = 2;
-    g->root = 1;
+    g->used = 2 * (uint32_t)sizeof(PuctNode);   /* sentinel + root */
+    g->root = (uint32_t)sizeof(PuctNode);
     g->think_done = true;
     g->done_key = 0;
     for (int i = 0; i < g->n_walkers; i++)
@@ -409,10 +546,10 @@ PuctGame *puct_game_new(size_t block_bytes, int b, float komi, int maxply) {
         return NULL;
     }
     g->block_bytes = block_bytes;
-    g->cap = block_bytes / sizeof(PuctNode);
+    g->cap = block_bytes;            /* byte arena */
     g->cpuct = 1.25f;
     if (b < 2 || b > GO_MAX_B || maxply < 1 || maxply > MAX_PLY ||
-        g->cap < 3) {
+        g->cap < 2 * sizeof(PuctNode) + MAX_MOVES * sizeof(PuctEdge)) {
         unmap_block(g->nodes, g->block_bytes);
         free(g);
         return NULL;
@@ -475,60 +612,41 @@ static int node_pi_bar(const PuctGame *g, const PuctNode *r,
                        uint16_t *moves, float *pi, int cap);
 
 /* SEARCH (Grill et al. 2020): the descending move is sampled from
- * pi-bar — no deterministic PUCT path, no root noise. */
+ * pi-bar — no deterministic PUCT path, no root noise. Returns the
+ * sampled EDGE index into n's child array. */
 static uint32_t select_child(PuctGame *g, const PuctNode *n) {
     uint16_t mv[MAX_MOVES];
     float pi[MAX_MOVES];
     if (n->n_children < 2)
-        return n->first_child;
+        return 0;
     int m = node_pi_bar(g, n, mv, pi, MAX_MOVES);
     if (m <= 1)
-        return n->first_child;
+        return 0;
     double w[MAX_MOVES];
     for (int i = 0; i < m; i++)
         w[i] = (double)pi[i];
-    return n->first_child + (uint32_t)sample_index_stream(&g->rng, w, m,
-                                                          1.0);
-}
-
-/* Expand the childless leaf *idx with one child per legal move and
- * uniform placeholder priors; *idx must alias the parked walker's field
- * so a pack inside keeps it current. */
-static bool expand_uniform(PuctGame *g, uint32_t *idx, const MoveList *ml) {
-    assert(ml->count > 0);
-    uint32_t kids = alloc_nodes(g, ml->count);
-    if (kids == 0)
-        return false;
-    float prior = 1.0f / (float)ml->count;
-    for (int i = 0; i < ml->count; i++) {
-        PuctNode *c = &g->nodes[kids + i];
-        c->parent = *idx;
-        c->move = ml->moves[i];
-        c->prior = prior;
-    }
-    g->nodes[*idx].flags |= PUCT_PENDING;
-    g->nodes[*idx].first_child = kids;
-    g->nodes[*idx].n_children = (uint32_t)ml->count;
-    return true;
+    return (uint32_t)sample_index_stream(&g->rng, w, m, 1.0);
 }
 
 /* Fill the parked leaf's real priors: softmax over the row's logp at
- * each child's policy slot. */
+ * each child edge's policy slot. */
 static void fill_priors(PuctGame *g, uint32_t idx, const float *logp,
                         const State *st) {
-    PuctNode *n = &g->nodes[idx];
+    PuctNode *n = node_at(g, idx);
+    PuctEdge *E = kids_of(g, n);
     int slots[MAX_MOVES];
     double max = -INFINITY, sum = 0.0;
     for (uint32_t i = 0; i < n->n_children; i++) {
-        slots[i] = go_policy_slot(st, g->nodes[n->first_child + i].move);
+        slots[i] = go_policy_slot(st, E[i].move);
         if (logp[slots[i]] > max)
             max = logp[slots[i]];
     }
     for (uint32_t i = 0; i < n->n_children; i++)
         sum += exp((double)logp[slots[i]] - max);
     for (uint32_t i = 0; i < n->n_children; i++)
-        g->nodes[n->first_child + i].prior =
-            (float)(exp((double)logp[slots[i]] - max) / sum);
+        E[i].prior_q =
+            (uint16_t)(exp((double)logp[slots[i]] - max) / sum * 65535.0
+                       + 0.5);
     n->flags &= ~(uint8_t)PUCT_PENDING;
 }
 
@@ -536,33 +654,56 @@ static void fill_priors(PuctGame *g, uint32_t idx, const float *logp,
  * during the descent. */
 static void backup(PuctGame *g, uint32_t leaf, float v) {
     double vs = -(double)v;
-    for (uint32_t i = leaf; i != 0; i = g->nodes[i].parent) {
-        g->nodes[i].value_sum += vs;
-        g->nodes[i].visits++;
+    for (uint32_t i = leaf; i != 0; ) {
+        PuctNode *n = node_at(g, i);
+        n->value_sum += vs;
+        n->visits++;
         vs = -vs;
+        i = n->parent;
     }
 }
 
 /* One descent attempt: pi-bar sampling from the root to a terminal
- * backup or a park (leaf expanded on the spot, eval row staged).
- * Returns false only when the active bank is full. */
+ * backup or a park (leaf's edge array built on the spot, eval row
+ * staged). The first selection of an edge materializes its node (one
+ * alloc, in place — a pack inside relocates the tree, so the cursor
+ * lives in w->idx, which sleep_remap keeps current). Returns false
+ * only when the active bank is full. */
 static bool walker_step(PuctGame *g, PuctWalker *w) {
     w->st = g->state;
-    uint32_t idx = g->root;
-    while (g->nodes[idx].n_children > 0 &&
-           !(g->nodes[idx].flags & PUCT_PENDING) &&
+    w->idx = g->root;
+    PuctNode *n = node_at(g, w->idx);
+    while (n->n_children > 0 && !(n->flags & PUCT_PENDING) &&
            w->st.ply < w->st.maxply) {
-        uint32_t c = select_child(g, &g->nodes[idx]);
-        make_move(&w->st, g->nodes[c].move);
-        idx = c;
+        PuctEdge *E = kids_of(g, n);
+        uint32_t e = select_child(g, n);
+        if (E[e].child == 0) {
+            uint32_t c = alloc_bytes(g, sizeof(PuctNode));
+            if (c == 0) {
+                w->dead = true;
+                return true;
+            }
+            n = node_at(g, w->idx);   /* a pack may have relocated it */
+            E = kids_of(g, n);
+            node_at(g, c)->parent = w->idx;
+            E[e].child = c;
+        }
+        make_move(&w->st, E[e].move);
+        w->idx = E[e].child;
+        n = node_at(g, w->idx);
     }
-    PuctNode *n = &g->nodes[idx];
+    {   /* every exit below ends a descent of this depth */
+        uint32_t d = w->st.ply - g->state.ply;
+        g->desc_sum += d;
+        g->descents++;
+        if (d > g->desc_max)
+            g->desc_max = d;
+    }
     if (n->flags & PUCT_PENDING) {
         /* expanded but unevaluated: co-sleep on its in-flight row */
-        w->idx = idx;
         w->row = -1;
         for (int i = 0; i < g->n_walkers; i++)
-            if (g->walkers[i].row >= 0 && g->walkers[i].idx == idx) {
+            if (g->walkers[i].row >= 0 && g->walkers[i].idx == w->idx) {
                 w->row = g->walkers[i].row;
                 break;
             }
@@ -580,13 +721,13 @@ static bool walker_step(PuctGame *g, PuctWalker *w) {
         state_termination(&w->st, NULL, NULL) != TERM_PLAYING) {
         if (!(n->flags & PUCT_TERMINAL))
             set_terminal(n, &w->st);
-        backup(g, idx, n->wdl[0] - n->wdl[1]);
+        backup(g, w->idx, terminal_value(n));
         g->parks++;
         g->terminal_hits++;
         g->sims_done++;
         return true;
     }
-    /* park: reserve a row, expand here, stage into it. */
+    /* park: reserve a row, build the edge array here, stage into it. */
     ZONE_LOCK();
     int b = Z.active;
     if (Z.banks[b].used >= z_rows) {
@@ -595,13 +736,24 @@ static bool walker_step(PuctGame *g, PuctWalker *w) {
     }
     int off = Z.banks[b].used++;
     ZONE_UNLOCK();
-    w->idx = idx;
     MoveList ml;
     gen_legal(&w->st, &ml);
-    if (!expand_uniform(g, &w->idx, &ml)) {
+    uint32_t es =
+        alloc_bytes(g, (size_t)ml.count * sizeof(PuctEdge));
+    if (es == 0) {
         w->dead = true;
         return true;
     }
+    PuctNode *pn = node_at(g, w->idx);
+    PuctEdge *E = (PuctEdge *)((char *)g->nodes + es);
+    uint16_t uq = (uint16_t)(65535.0 / ml.count + 0.5);
+    for (int i = 0; i < ml.count; i++) {
+        E[i].move = ml.moves[i];
+        E[i].prior_q = uq;      /* child stays 0 (zeroed alloc) */
+    }
+    pn->flags |= PUCT_PENDING;
+    pn->first_child = es;
+    pn->n_children = (uint16_t)ml.count;
     w->row = b * z_rows + off;
     nn_encode(&w->st, Z.banks[b].planes + (size_t)off * NN_TOTAL);
     uint8_t *m = Z.banks[b].mask + (size_t)off * PUCT_POLICY_SIZE;
@@ -617,9 +769,9 @@ static bool walker_step(PuctGame *g, PuctWalker *w) {
 static void walker_deliver(PuctGame *g, PuctWalker *w) {
     int b = w->row / z_rows;
     int off = w->row - b * z_rows;
-    assert(g->nodes[w->idx].n_children > 0);
+    assert(node_at(g, w->idx)->n_children > 0);
     /* first delivery only: co-sleepers share the row */
-    if (g->nodes[w->idx].flags & PUCT_PENDING)
+    if (node_at(g, w->idx)->flags & PUCT_PENDING)
         fill_priors(g, w->idx,
                     Z.banks[b].logp + (size_t)off * PUCT_POLICY_SIZE, &w->st);
     if (w->idx != g->root) {
@@ -645,13 +797,14 @@ static int puct_walk(PuctGame *g, int sims) {
         g->think_done = false;
         g->sims_done = 0;
         g->parks = g->terminal_hits = g->pending_parks = 0;
+        g->desc_sum = g->desc_max = g->descents = 0;
         g->rng = rng_next();
         for (int i = 0; i < g->n_walkers; i++) {
             g->walkers[i].dead = false;
             g->walkers[i].row = -1;
         }
     }
-    if (g->nodes[g->root].flags & PUCT_TERMINAL) {
+    if (node_at(g, g->root)->flags & PUCT_TERMINAL) {
         g->think_done = true;
         g->done_key = state_poskey(&g->state);
         return WALK_DONE;
@@ -723,38 +876,43 @@ void puct_think(PuctGame *g, int sims) {
     assert(state_poskey(&g->state) == key0);
 }
 
-/* Play m (must be legal): a root child keeps its subtree; any other legal
- * move gets a fresh root. */
+/* Play m (must be legal): a materialized root child keeps its subtree;
+ * any other legal move gets a fresh root. */
 int puct_play(PuctGame *g, Move m) {
-    PuctNode *r = &g->nodes[g->root];
+    PuctNode *r = node_at(g, g->root);
+    PuctEdge *E = kids_of(g, r);
     uint32_t nr = 0;
     for (uint32_t i = 0; i < r->n_children; i++)
-        if (g->nodes[r->first_child + i].move == m) {
-            nr = r->first_child + i;
+        if (E[i].move == m) {
+            nr = E[i].child;
             break;
         }
     if (nr == 0)
-        nr = alloc_nodes(g, 1);
+        nr = alloc_bytes(g, sizeof(PuctNode));
     if (nr == 0)
         return -1;
     make_move(&g->state, m);
     g->root = nr;
-    g->nodes[nr].parent = 0;
+    node_at(g, nr)->parent = 0;
     g->done_key = 0;
     return 0;
 }
 
 Move puct_best_move(const PuctGame *g) {
-    const PuctNode *r = &g->nodes[g->root];
-    uint32_t best = r->first_child, bv = 0;
+    const PuctNode *r = node_at_c(g, g->root);
+    if (r->n_children == 0)
+        return MOVE_PASS;
+    const PuctEdge *E = kids_of_c(g, r);
+    uint32_t best = 0, bv = 0;
     for (uint32_t i = 0; i < r->n_children; i++) {
-        uint32_t c = r->first_child + i;
-        if (g->nodes[c].visits > bv) {
-            bv = g->nodes[c].visits;
-            best = c;
+        const PuctNode *c =
+            E[i].child ? node_at_c(g, E[i].child) : NULL;
+        if (c && c->visits > bv) {
+            bv = c->visits;
+            best = i;
         }
     }
-    return best ? g->nodes[best].move : MOVE_PASS;
+    return E[best].move;
 }
 
 uint32_t puct_oom_count(const PuctGame *g) { return g->oom; }
@@ -772,27 +930,39 @@ void puct_park_stats(const PuctGame *g, uint32_t *parks,
         *pending_parks = g->pending_parks;
 }
 
+/* Per-think root→leaf descent depth (all walker exits: eval parks,
+ * co-sleeps, terminals, ply walls). mean of 0 = no descent yet. */
+void puct_depth_stats(const PuctGame *g, double *mean, uint32_t *max) {
+    if (mean)
+        *mean = g->descents ? (double)g->desc_sum / g->descents : 0.0;
+    if (max)
+        *max = g->desc_max;
+}
+
 const State *puct_state(const PuctGame *g) { return &g->state; }
 
 int puct_root_children(const PuctGame *g, uint16_t *moves, uint32_t *visits,
                        double *q, float *prior) {
-    const PuctNode *r = &g->nodes[g->root];
+    const PuctNode *r = node_at_c(g, g->root);
+    const PuctEdge *E = kids_of_c(g, r);
     for (uint32_t i = 0; i < r->n_children; i++) {
-        const PuctNode *c = &g->nodes[r->first_child + i];
+        const PuctNode *c =
+            E[i].child ? node_at_c(g, E[i].child) : NULL;
         if (moves)
-            moves[i] = c->move;
+            moves[i] = E[i].move;
         if (visits)
-            visits[i] = c->visits;
+            visits[i] = c ? c->visits : 0;
         if (q)
-            q[i] = c->visits ? c->value_sum / c->visits : 0.0;
+            q[i] = (c && c->visits) ? (double)c->value_sum / c->visits
+                                    : 0.0;
         if (prior)
-            prior[i] = c->prior;
+            prior[i] = (float)prior_of_q(E[i].prior_q);
     }
     return (int)r->n_children;
 }
 
 void puct_root_stats(const PuctGame *g, uint32_t *visits, double *value_sum) {
-    const PuctNode *r = &g->nodes[g->root];
+    const PuctNode *r = node_at_c(g, g->root);
     if (visits)
         *visits = r->visits;
     if (value_sum)
@@ -977,6 +1147,7 @@ static int node_pi_bar(const PuctGame *g, const PuctNode *r,
         return 0;
     if (n > cap)
         n = cap;
+    const PuctEdge *E = kids_of_c(g, r);
     double N = (double)r->visits;
     double qmax = -INFINITY, sum = 0.0;
     double lam = N > 0.0 ? (double)g->cpuct * sqrt(N)
@@ -985,12 +1156,11 @@ static int node_pi_bar(const PuctGame *g, const PuctNode *r,
         /* nothing visited: the regularized policy is the prior itself */
         double ps = 0.0;
         for (int i = 0; i < n; i++)
-            ps += (double)g->nodes[r->first_child + i].prior;
+            ps += prior_of_q(E[i].prior_q);
         for (int i = 0; i < n; i++) {
-            const PuctNode *c = &g->nodes[r->first_child + i];
             if (moves)
-                moves[i] = c->move;
-            pi[i] = (float)((double)c->prior / ps);
+                moves[i] = E[i].move;
+            pi[i] = (float)(prior_of_q(E[i].prior_q) / ps);
         }
         return n;
     }
@@ -1002,10 +1172,12 @@ static int node_pi_bar(const PuctGame *g, const PuctNode *r,
     int nv = (n + 3) / 4;
     for (int i = 0; i < nv * 4; i++) {
         if (i < n) {
-            const PuctNode *c = &g->nodes[r->first_child + i];
-            double qi = c->visits ? c->value_sum / (double)c->visits : v_node;
+            const PuctNode *c =
+                E[i].child ? node_at_c(g, E[i].child) : NULL;
+            double qi = (c && c->visits) ? c->value_sum / (double)c->visits
+                                         : v_node;
             q[i] = qi;
-            lp[i] = lam * (double)c->prior;
+            lp[i] = lam * prior_of_q(E[i].prior_q);
             if (qi > qmax)
                 qmax = qi;
         } else {
@@ -1035,9 +1207,8 @@ static int node_pi_bar(const PuctGame *g, const PuctNode *r,
             break;
     }
     for (int i = 0; i < n; i++) {
-        const PuctNode *c = &g->nodes[r->first_child + i];
         if (moves)
-            moves[i] = c->move;
+            moves[i] = E[i].move;
         pi[i] = (float)(lp[i] / (a - q[i]));
         sum += pi[i];
     }
@@ -1047,23 +1218,27 @@ static int node_pi_bar(const PuctGame *g, const PuctNode *r,
 }
 
 int puct_learn_pi(const PuctGame *g, uint16_t *moves, float *pi, int cap) {
-    int n = node_pi_bar(g, &g->nodes[g->root], moves, pi, cap);
+    int n = node_pi_bar(g, node_at_c(g, g->root), moves, pi, cap);
     if (getenv("PUCT_DEBUG_PI")) {          // dump root children once per ply
         static int calls = 0;
-        const PuctNode *r = &g->nodes[g->root];
+        const PuctNode *r = node_at_c(g, g->root);
+        const PuctEdge *E = kids_of_c(g, r);
         char v[6];
         int b = puct_state(g)->b;
         fprintf(stderr, "PIBAR call=%d rootvisits=%u children=%u\n",
                 calls, r->visits, r->n_children);
         for (int i = 0; i < n; i++) {
-            const PuctNode *c = &g->nodes[r->first_child + i];
-            move_to_gtp(c->move, b, v);
+            const PuctNode *c =
+                E[i].child ? node_at_c(g, E[i].child) : NULL;
+            move_to_gtp(E[i].move, b, v);
             fprintf(stderr,
                     "PIBAR call=%d mv=%s prior=%.4f visits=%u "
                     "qsum/visits=%+.4f pi=%.4f\n",
-                    calls, c->move == MOVE_PASS ? "pass" : v, c->prior,
-                    c->visits,
-                    c->visits ? c->value_sum / c->visits : 0.0, pi[i]);
+                    calls, E[i].move == MOVE_PASS ? "pass" : v,
+                    (float)prior_of_q(E[i].prior_q), c ? c->visits : 0,
+                    c && c->visits
+                        ? (double)c->value_sum / c->visits : 0.0,
+                    pi[i]);
         }
         calls++;
     }

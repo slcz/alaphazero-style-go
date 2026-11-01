@@ -32,9 +32,8 @@ from go_ai.net.model import GoNet, NetConfig, to_half_
 @dataclass
 class TrainConfig:
     lr: float = 3e-4
-    optimizer: str = "adam"           # "adam" | "muon" (muon: lr is the
-                                      # Muon lr, hidden 2D matrices only)
-    adam_lr: float = 2e-4             # non-Muon params when optimizer=muon
+    adam_lr: float = 2e-4             # companion AdamW: non-Muon params
+                                      # (heads, norms, embeddings)
     batch_size: int = 256
     value_weight: float = 1.0
     policy_weight: float = 1.0
@@ -103,30 +102,20 @@ class Trainer:
         self._raw_model = model          # unwrapped: state_dict stays clean
         self._maybe_compile()
         params = list(model.parameters())
-        if cfg.optimizer == "muon":
-            mu = [p for p in params
-                  if p.dim() == 2 and min(p.shape) >= 64]
-            mu_ids = {id(p) for p in mu}
-            ad = [p for p in params if id(p) not in mu_ids]
-            self.opt = torch.optim.Muon(mu, lr=cfg.lr,
-                                        weight_decay=cfg.weight_decay,
-                                        adjust_lr_fn="original")
-            try:                         # fused Adam: one update kernel
-                self.opt_adam = torch.optim.Adam(
-                    ad, lr=cfg.adam_lr, fused=self.device.type == "cuda",
-                    weight_decay=cfg.weight_decay)
-            except TypeError:
-                self.opt_adam = torch.optim.Adam(ad, lr=cfg.adam_lr,
-                                                 weight_decay=cfg.weight_decay)
-        else:
-            try:                         # fused Adam: one update kernel
-                self.opt = torch.optim.Adam(   # for all tensors (CUDA only)
-                    params, lr=cfg.lr, fused=self.device.type == "cuda",
-                    weight_decay=cfg.weight_decay)
-            except TypeError:            # older torch without `fused`
-                self.opt = torch.optim.Adam(model.parameters(), lr=cfg.lr,
-                                            weight_decay=cfg.weight_decay)
-            self.opt_adam = None
+        mu = [p for p in params
+              if p.dim() == 2 and min(p.shape) >= 64]
+        mu_ids = {id(p) for p in mu}
+        ad = [p for p in params if id(p) not in mu_ids]
+        self.opt = torch.optim.Muon(mu, lr=cfg.lr,
+                                    weight_decay=cfg.weight_decay,
+                                    adjust_lr_fn="original")
+        try:                             # fused Adam: one update kernel
+            self.opt_adam = torch.optim.Adam(
+                ad, lr=cfg.adam_lr, fused=self.device.type == "cuda",
+                weight_decay=cfg.weight_decay)
+        except TypeError:
+            self.opt_adam = torch.optim.Adam(ad, lr=cfg.adam_lr,
+                                             weight_decay=cfg.weight_decay)
         self.steps = 0
         torch.manual_seed(cfg.seed)
 
@@ -297,10 +286,14 @@ class Trainer:
 
     @classmethod
     def load(cls, path: os.PathLike, model: Optional[GoNet] = None,
-             device: Optional[str] = None, strict: bool = True) -> "Trainer":
+             device: Optional[str] = None, strict: bool = True,
+             cfg_overrides: Optional[dict] = None) -> "Trainer":
         payload = torch.load(Path(path), map_location="cpu",
                              weights_only=False)
-        cfg = TrainConfig(**payload["config"])
+        # legacy configs may carry removed keys (e.g. optimizer="adam")
+        known = TrainConfig.__dataclass_fields__
+        cfg = TrainConfig(**{k: v for k, v in payload["config"].items()
+                             if k in known})
         if device is not None:
             cfg.device = device
         cfg.device = resolve_device(cfg.device)
@@ -319,11 +312,20 @@ class Trainer:
                 and torch.device(cfg.device).type != "cuda":
             to_half_(model)
             model.to(torch.float16)
+        # caller overrides win (e.g. train_round's --lr/--opt/--batch);
+        # applied before __init__ so the optimizer is built to match
+        for k, v in (cfg_overrides or {}).items():
+            setattr(cfg, k, v)
         trainer = cls(model, cfg)
         if strict and payload.get("optimizer"):
-            trainer.opt.load_state_dict(payload["optimizer"])
-            if trainer.opt_adam is not None and payload.get("optimizer_adam"):
-                trainer.opt_adam.load_state_dict(payload["optimizer_adam"])
+            try:      # pre-Muon checkpoints stored an all-Adam state
+                trainer.opt.load_state_dict(payload["optimizer"])
+                if trainer.opt_adam is not None \
+                        and payload.get("optimizer_adam"):
+                    trainer.opt_adam.load_state_dict(
+                        payload["optimizer_adam"])
+            except (ValueError, RuntimeError):
+                print("[trainer] optimizer state not restored (new params)")
         elif strict:
             print("[trainer] optimizer state not restored (new params)")
         trainer.steps = payload["steps"]

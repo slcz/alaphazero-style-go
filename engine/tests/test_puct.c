@@ -124,7 +124,7 @@ static void test_bookkeeping(void) {
         w_children += q[i] * visits[i];
         n_children_sum += visits[i];
     }
-    CHECK(near_d(prior_sum, 1.0, 1e-6));
+    CHECK(near_d(prior_sum, 1.0, n / 65535.0));
 
     uint32_t root_visits;
     double root_w;
@@ -266,7 +266,7 @@ static void test_prior_pattern(void) {
         sum += exp(z[i]);
     }
     for (int i = 0; i < n; i++)
-        CHECK(near_d(prior[i], exp(z[i]) / sum, 1e-6));
+        CHECK(near_d(prior[i], exp(z[i]) / sum, 1.0 / 65535));
     puct_game_free(g);
 }
 
@@ -327,7 +327,7 @@ static void test_oom(void) {
 /* ---- 9. compaction -------------------------------------------------------- */
 
 static void test_compaction(void) {
-    PuctGame *g = puct_game_new(sizeof(PuctNode) * 16000, 7, 9.5f, 150);
+    PuctGame *g = puct_game_new(sizeof(PuctNode) * 3000, 7, 9.5f, 150);
     CHECK(g != NULL);
     for (int round = 0; round < 12; round++) {
         puct_think(g, 100);

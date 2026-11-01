@@ -106,6 +106,26 @@ def phase(eng, sims, games, boards, moves, sent):
     return out
 
 
+def _gate_sgf(sgf_dir, wave, gid, args, mvs, a_is_black, winner, score):
+    """One SGF per game: player names carry the checkpoint basenames."""
+    from shard_to_sgf import sgf_pt
+    name_a = Path(args.ckpt_a).parent.name + "/" + Path(args.ckpt_a).name
+    name_b = Path(args.ckpt_b).parent.name + "/" + Path(args.ckpt_b).name
+    pb, pw = (name_a, name_b) if a_is_black else (name_b, name_a)
+    if score is None:
+        re_ = f"{winner}+R"
+    else:
+        re_ = f"B+{score:.1f}" if score > 0 else f"W+{-score:.1f}"
+    out = [f"(;GM[1]FF[4]SZ[{args.b}]KM[{args.komi}]PB[{pb}]PW[{pw}]"
+           f"RE[{re_}]C[gate wave {wave} game {gid}]"]
+    for i, m in enumerate(mvs):
+        out.append(";" + ("B" if i % 2 == 0 else "W") + f"[{sgf_pt(m, args.b)}]")
+    out.append(")\n")
+    d = Path(sgf_dir)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"gate-w{wave}-g{gid}.sgf").write_text("".join(out))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ckpt-a", required=True)
@@ -128,6 +148,8 @@ def main():
     ap.add_argument("--resign-ply", type=int, default=10)
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--json", default=None)
+    ap.add_argument("--sgf-dir", default=None,
+                    help="write one SGF per game here (Sabaki-viewable)")
     args = ap.parse_args()
 
     seed = args.seed if args.seed is not None else random.randrange(1 << 31)
@@ -196,12 +218,17 @@ def main():
                 if resigned[gid]:
                     sc = 0.0 if bd.side_to_move == eng_a.side else 1.0
                     score = None
+                    winner = "W" if (bd.side_to_move == 1) else "B"
                 else:
                     code, score, _ = bd.termination()
                     if code != TERM_OVER:
                         still.append(gid)
                         continue
                     sc = 1.0 if (score > 0) == a_is_black else 0.0
+                    winner = "B" if score > 0 else "W"
+                if args.sgf_dir:
+                    _gate_sgf(args.sgf_dir, wave, gid, args, moves[gid],
+                              a_is_black, winner, score)
                 if sc == 1.0:
                     w += 1
                 else:
