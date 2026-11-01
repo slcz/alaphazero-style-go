@@ -23,7 +23,7 @@ salad RTX 5090 node), with per-iteration HF backups done from the Mac
 | training plies | ONLY slow-cap plies (`ply.sims == n_sims`) | `selfplay_data.ply_trainable` |
 | optimizer | Muon lr 0.01 + companion AdamW 2e-4 | `train_round.py` defaults |
 | batch / epochs | 3072 / 1 | `--batch --epochs` |
-| replay buffer | keep 50% of the old games per iteration (1, ½, ¼ …) | `--buffer-keep` |
+| replay buffer | keep 1/3 of the old games per iteration (1, ⅓, 1/9 …) | `--buffer-keep` |
 | FP8 inference | static waves, one graph per board size | `NN_B=<b> NN_COMPILE=1 NN_BF16=1` |
 | gate | 400 games (2×200, colors swapped), 200 sims, argmax after 10 sampled plies, resign OFF, 200-ply cap, rows 800 | `selfplay_loop.gate()` |
 | promote policy | EVAL-ONLY: latest checkpoint always becomes next base (no accept/reject) | `selfplay_loop.py` |
@@ -57,13 +57,14 @@ The loop keeps a *game-level* replay buffer instead of training on the
 newest round only. After a round's shard is DONE, `selfplay_loop.py`
 writes `<work>/buffer.json`:
 
-    {"version": 1, "keep": 0.5, "iteration": 4,
+    {"version": 1, "keep": 0.333, "iteration": 4,
      "rounds": [{"round": 3, "shard": "it003/selfplay/shard-0.spbin",
                  "count": 30000, "games": [12, 45, ...]}, ...]}
 
 - A round's games survive with probability `keep ** (iteration - round)`:
   the new round in full, half of the previous, a quarter of the one
-  before it. Expected buffer ≈ 2 rounds (60K games) at `keep = 0.5`.
+  before it. Expected buffer ≈ 1.5 rounds (45K games) at `keep = 1/3`,
+  i.e. +50% training per round instead of +100%.
 - It is a PURE FUNCTION of (iteration, round, seed) and the rounds on
   disk (`DONE.json` gives each round's game count), so a resume rebuilds
   exactly the same manifest and the trim only ever removes games.
@@ -85,7 +86,7 @@ writes `<work>/buffer.json`:
 - Warm start: `--base-ckpt best.pt` (previous iteration's net + optimizer
   state). `train.ck.pt` written every 500 steps (`--save-every`).
 - Off-policy note: an old round's π̄ comes from an older net. At
-  `keep = 0.5` a 3-round-old round carries 12% of the draws, so it is
+  `keep = 1/3` a 3-round-old round carries 4% of the draws, so it is
   mild; the value/score/ownership labels do not age at all.
 - Known node quirk: cuBLAS bf16 GEMM fails at batch 4096 on this
   2.8.0/2.11+cu128 stack — batch 3072 verified.

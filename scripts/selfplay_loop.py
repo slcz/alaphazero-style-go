@@ -250,9 +250,9 @@ def main() -> int:
     ap.add_argument("--epochs", type=int, default=1)
     ap.add_argument("--batch", type=int, default=4096)
     ap.add_argument("--lr", type=float, default=2e-4)
-    ap.add_argument("--buffer-keep", type=float, default=0.5,
+    ap.add_argument("--buffer-keep", type=float, default=1 / 3,
                     help="fraction of an old round kept per iteration "
-                         "(0.5 → 1, 1/2, 1/4 ... of successive rounds)")
+                         "(1/3 → 1, 1/3, 1/9 ... of successive rounds)")
     ap.add_argument("--gate-games", type=int, default=400)
     ap.add_argument("--gate-sims", type=int, default=200)
     ap.add_argument("--gate-max-plys", type=int, default=200)
