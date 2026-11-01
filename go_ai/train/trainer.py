@@ -74,6 +74,7 @@ _TORCH_DTYPES = {
     "mask": torch.bool,
     "pi_slots": torch.int64,
     "pi_probs": torch.float32,
+    "pi": torch.float32,
     "wdl": torch.float32,
     "own": torch.float32,
     "score_bin": torch.int64,
@@ -144,14 +145,13 @@ class Trainer:
             out = self.model(batch["tokens"], batch["mask"],
                              batch["aux_mask"])
 
-            # dense π̄ target: per-sample −Σ_a π(a)·logp_θ(a). π slots are
-            # legal moves so the gathered logp is finite; padding repeats
-            # the first slot at prob 0.
-            slot_logp = out["policy_logp"].gather(1, batch["pi_slots"])
-            nll = -(batch["pi_probs"] * slot_logp).sum(-1)
-            policy_loss = nll.mean()
-            policy_acc = ((slot_logp.argmax(-1)
-                           == batch["pi_probs"].argmax(-1)).float().mean())
+            # dense π̄ target: −Σ_a π(a)·logp_θ(a) over the policy row
+            # stride. π is 0 outside the legal set, so the masked slots
+            # contribute 0·(large negative) = 0.
+            logp = out["policy_logp"]
+            policy_loss = -(batch["pi"] * logp).sum(-1).mean()
+            policy_acc = ((logp.argmax(-1)
+                           == batch["pi"].argmax(-1)).float().mean())
 
             wdl_logp = F.log_softmax(out["wdl"], dim=-1)
             value_loss = -(wdl_logp * batch["wdl"]).sum(-1).mean()
@@ -254,14 +254,13 @@ class Trainer:
                                      self.device)
             out = self.model(batch["tokens"], batch["mask"], batch["aux_mask"])
             sums["policy_acc"] += (out["policy_logp"].argmax(-1)
-                                   == batch["pi_probs"].argmax(-1)
+                                   == batch["pi"].argmax(-1)
                                    ).float().sum().item()
             sums["value_acc"] += (out["wdl"].argmax(-1)
                                   == batch["wdl"].argmax(-1)
                                   ).float().sum().item()
-            sums["policy_nll"] += (-(out["policy_logp"].gather(
-                1, batch["pi_slots"]).squeeze(1)
-                * batch["pi_probs"]).sum(-1)).sum().item()
+            sums["policy_nll"] += (-(out["policy_logp"]
+                                     * batch["pi"]).sum(-1)).sum().item()
         self.model.train()
         return {k: v / n for k, v in sums.items()}
 

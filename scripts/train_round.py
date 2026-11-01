@@ -1,22 +1,25 @@
 #!/usr/bin/env python3
 """train_round.py — train one checkpoint from the self-play replay buffer.
 
-    python scripts/train_round.py --buffer work/buffer.json \
-        --out it004/train.pt [--base-ckpt best.pt] --epochs 1 \
+    python scripts/train_round.py --buffer work/buffer.json \\
+        --out it004/train.pt [--base-ckpt best.pt] --epochs 1 \\
         --batch 3072 --lr 0.01 --device cuda
 
 The buffer manifest (buffer.json, written and trimmed by selfplay_loop.py)
 lists, per preserved round, the shard and the game ids to train on:
 `{"rounds": [{"round": 3, "shard": "it003/selfplay/shard-0.spbin",
-"games": [...]}]}`. Only those games are parsed and replayed; the rest of
-each shard is fast-forwarded. Rounds take no weight of their own — they
-are already thinned to the intended mix by the manifest.
+"games": [...]}]}`. Rounds take no weight of their own — they are already
+thinned to the intended mix by the manifest.
 
-Every trainable ply (PCR slow-cap filter) yields syms=8 D4-augmented
-samples drawn ON THE FLY — nothing is materialized (tokens for a 30k-game
-round would be ~20 GB; the replay is C-side). Steps = ceil(trainable
-plies × 8 × epochs / batch). `--data-dir` trains whole rounds instead
-(tests, one-off runs). No --base-ckpt = random init.
+Each round's shard is materialized ONCE into a compact row cache
+(go_ai/train/rowcache.py: ~400 B/row, one forward replay per game) and the
+manifest's game ids select rows out of it. A step is then a handful of
+numpy gathers instead of one cffi replay per sample — the old path spent
+~0.45 s of CPU per 3072-row step and left the GPU at ~18% duty.
+
+Steps = ceil(rows × 8 × epochs / batch) with rows the SELECTED rows, and
+each step draws one D4 symmetry for the whole batch. `--data-dir` trains
+whole rounds instead (tests, one-off runs). No --base-ckpt = random init.
 """
 from __future__ import annotations
 
@@ -33,15 +36,14 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
 from go_ai.net.model import GoNet, NetConfig
-from go_ai.selfplay.shard import read_games, read_unit
-from go_ai.train.selfplay_data import K, selfplay_sample, trainable_plies
+from go_ai.train import rowcache
 from go_ai.train.trainer import (Trainer, TrainConfig, resolve_device,
                                  tensors_to_torch)
 
 
 def load_buffer(manifest):
-    """buffer.json → [(round, shard_path, game_ids)], dead rounds dropped
-    (a restored node may not have every shard)."""
+    """buffer.json → [(round, unit_dir, game_ids)], dead rounds dropped (a
+    restored node may not have every shard)."""
     m = json.loads(Path(manifest).read_text())
     base = Path(manifest).resolve().parent
     out = []
@@ -51,7 +53,7 @@ def load_buffer(manifest):
             print(f"  round {r['round']:03d}: shard missing ({p}) — dropped",
                   flush=True)
             continue
-        out.append((int(r["round"]), p, r["games"]))
+        out.append((int(r["round"]), p.parent, r["games"]))
     return out
 
 
@@ -74,29 +76,42 @@ def main() -> int:
     ap.add_argument("--log-every", type=int, default=50)
     ap.add_argument("--save-every", type=int, default=500,
                     help="checkpoint to <out>-ck.pt every N steps")
+    ap.add_argument("--max-steps", type=int, default=0,
+                    help="cap the step count (debug runs; 0 = no cap)")
     ap.add_argument("--json", default=None)
     args = ap.parse_args()
 
     t0 = time.time()
-    games = []
+    rounds = []                       # (label, cache, selected rows, games)
     if args.buffer:
-        for round_no, shard, idx in load_buffer(args.buffer):
-            got = read_games(shard, idx)
-            print(f"  round {round_no:03d}: {len(got)}/{len(idx)} kept "
-                  f"games ({shard.name})", flush=True)
-            games.extend(got)
+        for round_no, unit, ids in load_buffer(args.buffer):
+            c = rowcache.load_or_build(unit)
+            sel = rowcache.select(c, ids)
+            rounds.append((f"it{round_no:03d}", c, sel, len(ids)))
+            print(f"  round {round_no:03d}: {len(ids)} games, {len(sel)} rows",
+                  flush=True)
     for d in args.data_dir:
-        games.extend(read_unit(d))
-    if not games:
-        print("no games", file=sys.stderr)
+        c = rowcache.load_or_build(d)
+        sel = rowcache.select(c, None)
+        n = int(c["game"].max()) + 1 if len(c["game"]) else 0
+        rounds.append((Path(d).parent.name, c, sel, n))
+        print(f"  {d}: {n} games, {len(sel)} rows", flush=True)
+    if not rounds or not any(len(r[2]) for r in rounds):
+        print("no trainable rows", file=sys.stderr)
         return 1
-    bs = {g.b for g in games}
-    assert len(bs) == 1, f"mixed board sizes in one round: {bs}"
-    rows = [(gi, i) for gi, g in enumerate(games)
-            for i in trainable_plies(g)]
-    steps = max(1, -(-len(rows) * 8 * args.epochs // args.batch))
-    print(f"train: {len(games)} games, {len(rows)} trainable plies, "
-          f"steps={steps} (8x D4 aug, batch {args.batch})", flush=True)
+
+    b = int(rounds[0][1]["b"])
+    komi = float(rounds[0][1]["komi"])
+    assert all(int(r[1]["b"]) == b for r in rounds), "mixed board sizes"
+    caches = [r[1] for r in rounds]
+    sels = [r[2] for r in rounds]
+    rows = sum(len(s) for s in sels)
+    games = sum(r[3] for r in rounds)
+    steps = max(1, -(-rows * 8 * args.epochs // args.batch))
+    if args.max_steps:
+        steps = min(steps, args.max_steps)
+    print(f"train: {games} games over {len(rounds)} round(s), {rows} rows, "
+          f"steps={steps} (8x D4, batch {args.batch})", flush=True)
 
     if args.base_ckpt and Path(args.base_ckpt).exists():
         dev = resolve_device(args.device)   # returns a device STRING
@@ -107,8 +122,8 @@ def main() -> int:
                                compile=str(dev).startswith("cuda")))
         print(f"base: {args.base_ckpt} (steps {trainer.steps}) — "
               f"muon lr={trainer.cfg.lr} "
-              f"batch={trainer.cfg.batch_size} compile={trainer.cfg.compile}",
-              flush=True)
+              f"batch={trainer.cfg.batch_size} compile={trainer.cfg.compile} "
+              f"bf16={trainer.cfg.bf16}", flush=True)
     else:
         model = GoNet(NetConfig())
         cfg = TrainConfig(lr=args.lr, batch_size=args.batch,
@@ -118,21 +133,14 @@ def main() -> int:
               f"params)", flush=True)
 
     rng = np.random.default_rng(args.seed)
-    b = games[0].b
-    gi0, i0 = rows[0]        # game 0 may have no trainable (slow-cap) plies
-    proto = selfplay_sample(games[gi0], i0)   # per-sample shapes
-    batch = {k: np.zeros((args.batch,) + v.shape, v.dtype)
-             for k, v in proto.items()}
+    batch = rowcache.alloc_batch(args.batch, b)
     history = []
     for step in range(steps):
-        pick = rng.integers(0, len(rows), size=args.batch)
-        syms = rng.integers(0, 8, size=args.batch)
-        for j, r in enumerate(pick):
-            gi, i = rows[r]
-            s = selfplay_sample(games[gi], i, int(syms[j]))
-            for k, v in s.items():
-                batch[k][j] = v
-        m = trainer.train_step(tensors_to_torch(batch, trainer.device))
+        picks = rowcache.draw(args.batch, sels, rng)
+        n = rowcache.fill_batch(caches, picks, int(rng.integers(0, 8)),
+                                batch, b, komi)
+        m = trainer.train_step(tensors_to_torch(
+            {k: v[:n] for k, v in batch.items()}, trainer.device))
         history.append(m)
         if args.save_every and (step + 1) % args.save_every == 0:
             trainer.save(Path(args.out).with_suffix(".ck.pt"))
@@ -148,7 +156,8 @@ def main() -> int:
         n_log = min(len(history), 20)
         tail = history[-n_log:]
         Path(args.json).write_text(json.dumps({
-            "games": len(games), "trainable_plies": len(rows), "steps": steps,
+            "games": games, "trainable_plies": rows, "steps": steps,
+            "rounds": [(r[0], r[3], len(r[2])) for r in rounds],
             "final": {k: float(np.mean([h[k] for h in tail]))
                       for k in tail[0]},
             "elapsed_s": round(time.time() - t0, 1),

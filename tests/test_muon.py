@@ -42,9 +42,10 @@ def test_trainer_muon_split():
     b, T = 8, 49
     tok = torch.randn(b, T, 18)
     mask = torch.ones(b, T + 1, dtype=torch.bool)
-    batch = {"tokens": tok, "mask": mask,
-             "pi_slots": torch.randint(0, T + 1, (b, 8)),
-             "pi_probs": torch.rand(b, 8),
+    pi = torch.zeros(b, T + 1)
+    pi.scatter_(1, torch.randint(0, T + 1, (b, 8)),
+                torch.rand(b, 8) / 8)
+    batch = {"tokens": tok, "mask": mask, "pi": pi,
              "wdl": torch.ones(b, 2) * 0.5,
              "aux_idx": torch.zeros(b, dtype=torch.int64),
              "aux_mask": mask, "aux_w": torch.ones(b)}

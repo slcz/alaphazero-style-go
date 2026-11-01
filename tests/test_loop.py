@@ -54,8 +54,9 @@ def test_selfplay_loop(tmp_path):
     # replay buffer: the newest round is whole, older rounds are thinned,
     # and the manifest names the shard each round's games live in
     buf = json.loads((work / "buffer.json").read_text())
-    assert [r["round"] for r in buf["rounds"]] == [1, 2]
-    assert buf["rounds"][-1]["games"] == [0, 1]
-    assert len(buf["rounds"][0]["games"]) <= 2
+    got = [r["round"] for r in buf["rounds"]]
+    assert got in ([1, 2], [2]), got     # keep=1/3: a 2-game round may go
+    assert buf["rounds"][-1]["round"] == 2
+    assert buf["rounds"][-1]["games"] == [0, 1]      # newest, in full
     for r in buf["rounds"]:
         assert (work / r["shard"]).exists()

@@ -14,10 +14,13 @@ TINY = NetConfig(d_model=64, n_layers=2, n_heads=4, d_ff=64, rope_pairs=2)
 
 
 def _batch(sp_dir):
-    ss = []
-    for g in read_unit(sp_dir):
-        ss.extend(selfplay_samples(g))
-    return tensors_to_torch(stack_selfplay(ss[:16]), torch.device("cpu"))
+    games = read_unit(sp_dir)
+    ss = [s for g in games for s in selfplay_samples(g)]
+    raw = stack_selfplay(ss[:16])
+    raw["pi"] = np.stack([F.pi_dense(raw["pi_slots"][i], raw["pi_probs"][i],
+                                     int(raw["mask"][i].sum()), games[0].b)
+                          for i in range(len(raw["wdl"]))])
+    return tensors_to_torch(raw, torch.device("cpu"))
 
 
 def test_train_step(sp_dir):
@@ -43,8 +46,7 @@ def test_evaluate(sp_dir, tmp_path):
     ev = tr.evaluate({"tokens": batch["tokens"].numpy(),
                       "mask": batch["mask"].numpy(),
                       "aux_mask": batch["aux_mask"].numpy(),
-                      "pi_slots": batch["pi_slots"].numpy(),
-                      "pi_probs": batch["pi_probs"].numpy(),
+                      "pi": batch["pi"].numpy(),
                       "wdl": batch["wdl"].numpy()})
     assert 0.0 <= ev["policy_acc"] <= 1.0
     assert 0.0 <= ev["value_acc"] <= 1.0

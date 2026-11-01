@@ -39,6 +39,15 @@ def policy_mask(moves, b: int) -> np.ndarray:
     return m
 
 
+def pi_dense(pi_slots, pi_probs, n_legal: int, b: int) -> np.ndarray:
+    """(slots, probs) → dense over the policy head's b²+1 slots. The
+    padding beyond n_legal repeats slot 0 at prob 0, so it must not be
+    scattered."""
+    d = np.zeros(policy_size(b), np.float32)
+    d[np.asarray(pi_slots)[:n_legal]] = np.asarray(pi_probs)[:n_legal]
+    return d
+
+
 def wdl_onehot(mover_wins: bool) -> np.ndarray:
     """2-way [W, L] one-hot from the mover's view (no ties: fractional
     komi in selfplay)."""
