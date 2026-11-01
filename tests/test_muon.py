@@ -32,7 +32,7 @@ def test_muon_minimizes_least_squares():
 def test_trainer_muon_split():
     torch.manual_seed(0)
     cfg = TrainConfig(device="cpu", compile=False, batch_size=8,
-                      optimizer="muon", lr=0.01, own_weight=0.0,
+                      lr=0.01, own_weight=0.0,
                       score_pdf_weight=0.0, score_cdf_weight=0.0)
     tr = Trainer(GoNet(NetConfig(d_model=64, n_layers=2, n_heads=4,
                                  d_ff=128, rope_pairs=2)), cfg)

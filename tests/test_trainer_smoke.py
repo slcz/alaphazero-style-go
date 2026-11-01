@@ -10,7 +10,7 @@ from go_ai.selfplay.shard import read_unit
 from go_ai.train.selfplay_data import selfplay_samples, stack_selfplay
 from go_ai.train.trainer import TrainConfig, Trainer, tensors_to_torch
 
-TINY = NetConfig(d_model=32, n_layers=2, n_heads=4, d_ff=64, rope_pairs=2)
+TINY = NetConfig(d_model=64, n_layers=2, n_heads=4, d_ff=64, rope_pairs=2)
 
 
 def _batch(sp_dir):

@@ -23,6 +23,7 @@ import argparse
 import hashlib
 import json
 import os
+import random
 import shutil
 import subprocess
 import sys
@@ -59,6 +60,75 @@ def random_init_checkpoint(path: Path, seed: int) -> None:
                                seed=seed)).save(path)
     log(f"created random-init {path.name} "
         f"({sum(p.numel() for p in model.parameters()):,} params)")
+
+
+def _hf_token() -> str | None:
+    tok = os.environ.get("HF_TOKEN")
+    if tok:
+        return tok
+    env = REPO / ".env"
+    if env.exists():
+        for line in env.read_text().splitlines():
+            if line.startswith("HF_TOKEN="):
+                return line.split("=", 1)[1].strip()
+    return None
+
+
+def push_buffer(path: Path, it: int = 0) -> None:
+    """The manifest is the one thing a node loss cannot rebuild cheaply
+    (the shards come back from HF) — push it as soon as it changes."""
+    try:
+        from huggingface_hub import HfApi
+        tok = _hf_token()
+        if not tok:
+            log("  buffer push skipped (no HF_TOKEN)")
+            return
+        HfApi(token=tok).upload_file(
+            path_or_fileobj=str(path), path_in_repo="9x9/buffer.json",
+            repo_id=os.environ.get("HF_MODEL_REPO",
+                                   "chriszhang01/go-value-net"),
+            repo_type="model",
+            commit_message=f"buffer through it{it:03d}")
+        log(f"  buffer pushed to HF 9x9/buffer.json")
+    except Exception as e:                       # never fails the loop
+        log(f"  buffer push failed ({type(e).__name__}: {e})")
+
+
+def update_buffer(work: Path, it: int, keep: float, seed: int) -> dict:
+    """Rebuild buffer.json from the rounds on disk (pure function of the
+    iteration, so a resume reproduces it exactly).
+
+    A round's games survive with probability keep ** (it - round): the new
+    round in full, half of the previous, a quarter of the one before, ...
+    (expected buffer ≈ keep/(1-keep) extra rounds). The same per-round RNG
+    stream at a smaller p makes each trim a subset of the last."""
+    rounds = []
+    for f in sorted(work.glob("it*/selfplay/shard-0.spbin")):
+        r = int(f.parent.parent.name[2:])
+        done = f.parent / "DONE.json"
+        if r > it or not done.exists():
+            continue
+        n = (json.loads(done.read_text()).get("games_done")
+             or count_games(f.parent))
+        if n:
+            rounds.append((r, n))
+    rec = {"version": 1, "keep": keep, "seed": seed, "iteration": it,
+           "rounds": []}
+    for r, n in rounds:
+        rng = random.Random(seed * 7919 + r)
+        p = keep ** (it - r)
+        games = [g for g in range(n) if rng.random() < p]
+        if not games:
+            continue
+        rec["rounds"].append({
+            "round": r, "shard": f"it{r:03d}/selfplay/shard-0.spbin",
+            "count": n, "games": games})
+    path = work / "buffer.json"
+    path.write_text(json.dumps(rec))
+    log(f"it{it}: buffer {[(x['round'], len(x['games'])) for x in rec['rounds']]}"
+        f" = {sum(len(x['games']) for x in rec['rounds'])} games")
+    push_buffer(path, it)
+    return rec
 
 
 def pump(cmd: list[str], log_path: Path, env: dict[str, str] | None = None,
@@ -124,9 +194,9 @@ def generate(args, best: Path, unit_dir: Path, seed: int) -> int:
     return pump(cmd, unit_dir.parent / "generate.log", env=env)
 
 
-def train(args, unit_dirs: list[Path], base: Path, out: Path) -> int:
+def train(args, work: Path, base: Path, out: Path) -> int:
     cmd = [sys.executable, "scripts/train_round.py",
-           "--data-dir", *[str(d) for d in unit_dirs],
+           "--buffer", str(work / "buffer.json"),
            "--base-ckpt", str(base), "--out", str(out),
            "--epochs", str(args.epochs), "--batch", str(args.batch),
            "--lr", str(args.lr), "--seed", str(args.seed),
@@ -180,9 +250,9 @@ def main() -> int:
     ap.add_argument("--epochs", type=int, default=1)
     ap.add_argument("--batch", type=int, default=4096)
     ap.add_argument("--lr", type=float, default=2e-4)
-    ap.add_argument("--history", type=int, default=3,
-                    help="train on the last N rounds' shards at full "
-                         "weight (1 = newest only)")
+    ap.add_argument("--buffer-keep", type=float, default=0.5,
+                    help="fraction of an old round kept per iteration "
+                         "(0.5 → 1, 1/2, 1/4 ... of successive rounds)")
     ap.add_argument("--gate-games", type=int, default=400)
     ap.add_argument("--gate-sims", type=int, default=200)
     ap.add_argument("--gate-max-plys", type=int, default=200)
@@ -241,13 +311,11 @@ def main() -> int:
                     f"{time.time() - t0:.0f}s")
             else:
                 log(f"it{it}: reusing existing shard ({games} games)")
-            first = max(1, it - args.history + 1)
-            round_dirs = [work / f"it{j:03d}" / "selfplay"
-                          for j in range(first, it + 1)
-                          if (work / f"it{j:03d}" / "selfplay" /
-                              "DONE.json").exists()]
-            log(f"it{it}: training on {len(round_dirs)} round(s)")
-            rc = train(args, round_dirs, best, ckpt)
+            buf = update_buffer(work, it, args.buffer_keep, args.seed)
+            n_buf = sum(len(x["games"]) for x in buf["rounds"])
+            log(f"it{it}: training on {n_buf} buffered games "
+                f"from {len(buf['rounds'])} round(s)")
+            rc = train(args, work, best, ckpt)
             if rc != 0:
                 return rc
 
@@ -273,7 +341,7 @@ def main() -> int:
                "best_sha256": sha256(best)[:16],
                "params": {k: getattr(args, k) for k in
                           ("b", "komi", "sims", "fast_sims", "fast_p",
-                           "history", "lr", "batch", "epochs",
+                           "buffer_keep", "lr", "batch", "epochs",
                            "gate_games")}}
         with open(work / "loop.jsonl", "a") as fh:
             fh.write(json.dumps(rec) + "\n")

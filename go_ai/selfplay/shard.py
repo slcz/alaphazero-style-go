@@ -55,10 +55,12 @@ class SpGame:
     plies: Tuple[SpPly, ...]
 
 
-def scan_shard(path):
+def scan_shard(path, want=None):
     """Yield (SpGame, start_offset, end_offset) per complete game — the
     offsets let a slicer cut byte-exact parts from a shard that is still
-    being written. Raises on a bad header."""
+    being written. `want` (a set of game ids) fast-forwards every other
+    game instead of parsing it, so a buffer that keeps a slice of a round
+    pays only for what it trains on. Raises on a bad header."""
     data = Path(path).read_bytes()
     if len(data) < _SHARD_HDR.size:
         raise ValueError(f"{path}: shard shorter than its header")
@@ -76,6 +78,13 @@ def scan_shard(path):
         n_pts = b * b
         if off + n_pts * 2 > len(data):
             break
+        if want is not None and gidx not in want:
+            off += n_pts * 2
+            for _ in range(n_plies):
+                if off + _PLY_HDR.size > len(data):
+                    return
+                off += _PLY_HDR.size + _PLY_HDR.unpack_from(data, off)[2] * 2
+            continue
         own = struct.unpack_from(f"<{n_pts}e", data, off)
         off += n_pts * 2
         plies: List[SpPly] = []
@@ -130,6 +139,13 @@ def game_extents(path: str | Path, start: Optional[int] = None):
                 if not ok:
                     break
                 yield (s, off)
+
+
+def read_games(path, indices=None) -> List[SpGame]:
+    """Only the requested game ids (None = all). Memory holds just the
+    returned records: skipped games are fast-forwarded, not parsed."""
+    return [g for g, _s, _e in scan_shard(
+        path, None if indices is None else set(indices))]
 
 
 def read_shard(path) -> List[SpGame]:

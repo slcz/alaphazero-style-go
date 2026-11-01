@@ -11,7 +11,7 @@ from go_ai.net import features as F
 from go_ai.net.model import GoNet, NetConfig
 from go_ai.train.trainer import TrainConfig, Trainer
 
-TINY = NetConfig(d_model=32, n_layers=2, n_heads=4, d_ff=64, rope_pairs=2)
+TINY = NetConfig(d_model=64, n_layers=2, n_heads=4, d_ff=64, rope_pairs=2)
 
 
 @pytest.fixture(scope="module")

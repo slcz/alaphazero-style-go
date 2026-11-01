@@ -17,7 +17,7 @@ REPO = Path(__file__).resolve().parents[1]
 def test_selfplay_loop(tmp_path):
     init = tmp_path / "init.pt"
     torch.manual_seed(0)
-    net = GoNet(NetConfig(d_model=32, n_layers=2, n_heads=4, d_ff=64,
+    net = GoNet(NetConfig(d_model=64, n_layers=2, n_heads=4, d_ff=64,
                           rope_pairs=2))
     Trainer(net, TrainConfig(device="cpu", compile=False)).save(init)
 
@@ -41,7 +41,7 @@ def test_selfplay_loop(tmp_path):
     for rec in recs:
         assert rec["games"] == 2
         assert rec["gate_score"] is not None
-        assert rec["adopted"] in (True, False)
+        assert len(rec["ckpt_sha256"]) == 64
     # iteration artifacts exist and the best.pt was possibly updated
     assert (work / "it001" / "train.pt").exists()
     assert (work / "it001" / "eval.json").exists()
@@ -51,3 +51,11 @@ def test_selfplay_loop(tmp_path):
     shard_games = json.loads(
         (work / "it001" / "selfplay" / "DONE.json").read_text())
     assert shard_games["games_done"] == 2
+    # replay buffer: the newest round is whole, older rounds are thinned,
+    # and the manifest names the shard each round's games live in
+    buf = json.loads((work / "buffer.json").read_text())
+    assert [r["round"] for r in buf["rounds"]] == [1, 2]
+    assert buf["rounds"][-1]["games"] == [0, 1]
+    assert len(buf["rounds"][0]["games"]) <= 2
+    for r in buf["rounds"]:
+        assert (work / r["shard"]).exists()

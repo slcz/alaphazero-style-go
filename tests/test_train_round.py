@@ -15,7 +15,7 @@ REPO = Path(__file__).resolve().parents[1]
 def test_train_round(tmp_path, sp_dir):
     ck = tmp_path / "base.pt"
     torch.manual_seed(0)
-    net = GoNet(NetConfig(d_model=32, n_layers=2, n_heads=4, d_ff=64,
+    net = GoNet(NetConfig(d_model=64, n_layers=2, n_heads=4, d_ff=64,
                           rope_pairs=2))
     Trainer(net, TrainConfig(device="cpu", compile=False)).save(ck)
     out = tmp_path / "train.pt"

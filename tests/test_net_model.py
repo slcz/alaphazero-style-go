@@ -12,7 +12,7 @@ from go_ai.net.model import (SCORE_BINS, GoNet, NetConfig, count_parameters,
                              score_to_bin)
 from go_ai.train.trainer import TrainConfig, Trainer
 
-TINY = NetConfig(d_model=32, n_layers=2, n_heads=4, d_ff=64, rope_pairs=2)
+TINY = NetConfig(d_model=64, n_layers=2, n_heads=4, d_ff=64, rope_pairs=2)
 
 
 def _tokens(b, batch=3):

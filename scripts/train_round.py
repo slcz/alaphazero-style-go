@@ -1,15 +1,22 @@
 #!/usr/bin/env python3
-"""train_round.py — train one round's checkpoint from self-play shards.
+"""train_round.py — train one checkpoint from the self-play replay buffer.
 
-    python scripts/train_round.py --data-dir it001/selfplay [more dirs] \
-        --out it001/train.pt [--base-ckpt best.pt] --epochs 1 \
-        --batch 512 --lr 2e-4 --device cuda
+    python scripts/train_round.py --buffer work/buffer.json \
+        --out it004/train.pt [--base-ckpt best.pt] --epochs 1 \
+        --batch 3072 --lr 0.01 --device cuda
 
-Games come from the units' DONE-gated shards; every trainable ply (PCR
-slow-cap filter) yields syms=8 D4-augmented samples drawn ON THE FLY —
-the round's samples are never materialized (tokens for a 30k-game round
-would be ~20 GB; the replay is C-side and cheap). Steps = ceil(trainable
-plies × 8 × epochs / batch). No --base-ckpt = random init.
+The buffer manifest (buffer.json, written and trimmed by selfplay_loop.py)
+lists, per preserved round, the shard and the game ids to train on:
+`{"rounds": [{"round": 3, "shard": "it003/selfplay/shard-0.spbin",
+"games": [...]}]}`. Only those games are parsed and replayed; the rest of
+each shard is fast-forwarded. Rounds take no weight of their own — they
+are already thinned to the intended mix by the manifest.
+
+Every trainable ply (PCR slow-cap filter) yields syms=8 D4-augmented
+samples drawn ON THE FLY — nothing is materialized (tokens for a 30k-game
+round would be ~20 GB; the replay is C-side). Steps = ceil(trainable
+plies × 8 × epochs / batch). `--data-dir` trains whole rounds instead
+(tests, one-off runs). No --base-ckpt = random init.
 """
 from __future__ import annotations
 
@@ -26,15 +33,35 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
 from go_ai.net.model import GoNet, NetConfig
-from go_ai.selfplay.shard import read_unit
+from go_ai.selfplay.shard import read_games, read_unit
 from go_ai.train.selfplay_data import K, selfplay_sample, trainable_plies
 from go_ai.train.trainer import (Trainer, TrainConfig, resolve_device,
                                  tensors_to_torch)
 
 
+def load_buffer(manifest):
+    """buffer.json → [(round, shard_path, game_ids)], dead rounds dropped
+    (a restored node may not have every shard)."""
+    m = json.loads(Path(manifest).read_text())
+    base = Path(manifest).resolve().parent
+    out = []
+    for r in m["rounds"]:
+        p = base / r["shard"]
+        if not p.exists():
+            print(f"  round {r['round']:03d}: shard missing ({p}) — dropped",
+                  flush=True)
+            continue
+        out.append((int(r["round"]), p, r["games"]))
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data-dir", required=True, nargs="+")
+    ap.add_argument("--data-dir", nargs="*", default=[],
+                    help="whole rounds (test/one-off path)")
+    ap.add_argument("--buffer", default=None,
+                    help="buffer.json manifest: preserved game ids per "
+                         "round (preferred)")
     ap.add_argument("--out", required=True)
     ap.add_argument("--base-ckpt", default=None)
     ap.add_argument("--epochs", type=int, default=1)
@@ -52,6 +79,12 @@ def main() -> int:
 
     t0 = time.time()
     games = []
+    if args.buffer:
+        for round_no, shard, idx in load_buffer(args.buffer):
+            got = read_games(shard, idx)
+            print(f"  round {round_no:03d}: {len(got)}/{len(idx)} kept "
+                  f"games ({shard.name})", flush=True)
+            games.extend(got)
     for d in args.data_dir:
         games.extend(read_unit(d))
     if not games:
