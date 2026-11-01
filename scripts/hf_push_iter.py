@@ -1,33 +1,40 @@
 #!/usr/bin/env python3
 """hf_push_iter.py — back up one selfplay-loop iteration to HF.
 
-    python scripts/hf_push_iter.py 1 --rename gen0
+    python3 scripts/hf_push_iter.py 3 [--root /workspace/go-run-9x9]
+                                      [--rename gen0]
 
-Pulls from the salad node (scripts/salad.sh get, scp — the ssh-cat route
-corrupts binaries): train.pt, train.json, eval.json, train.log, the
-selfplay shard. Pushes to the model repo (checkpoint + summary json) and
-the dataset repo (games shard). Token stays local (.env)."""
+Runs ON the training node (selfplay_loop.py calls it right after the
+gate), so nothing is pulled back to the Mac. HF_TOKEN comes from the
+environment or <repo>/.env.
+
+Model repo (chriszhang01/go-value-net @ 9x9/):
+    itNNN-train.pt, itNNN-summary.json, itNNN-gate-sgf.tgz
+Dataset repo (chriszhang01/go-selfplay @ 9x9/):
+    itNNN/shard-0.spbin
+The summary carries the train loss start/end, the head metrics and the
+gate result; the SGF pack is one file per match game.
+"""
+import argparse
 import json
-import subprocess
 import sys
-import tempfile
+import tarfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-env = {}
-for line in (REPO / ".env").read_text().splitlines():
-    if "=" in line:
-        k, v = line.split("=", 1)
-        env[k.strip()] = v.strip()
-
-NODE_ROOT = "/workspace/go-run-9x9"
-SALAD = REPO / "scripts" / "salad.sh"
 
 
-def node_get(remote: str, local: Path) -> bool:
-    r = subprocess.run([str(SALAD), "get", remote, str(local)],
-                       capture_output=True, text=True)
-    return r.returncode == 0 and local.exists()
+def _env(key: str) -> str | None:
+    import os
+    v = os.environ.get(key)
+    if v:
+        return v
+    f = REPO / ".env"
+    if f.exists():
+        for line in f.read_text().splitlines():
+            if line.startswith(f"{key}="):
+                return line.split("=", 1)[1].strip()
+    return None
 
 
 def parse_train_log(path: Path) -> dict:
@@ -52,76 +59,88 @@ def parse_train_log(path: Path) -> dict:
     return {"start": steps[0], "end": steps[-1]} if steps else None
 
 
-def main() -> int:
-    it = int(sys.argv[1])
-    rename = None
-    if "--rename" in sys.argv:
-        rename = sys.argv[sys.argv.index("--rename") + 1]
-    from huggingface_hub import HfApi
-    api = HfApi(token=env["HF_TOKEN"])
-    model_repo = env["HF_MODEL_REPO"]
-    data_repo = env["HF_DATASET_REPO"]
+def pack_sgfs(itd: Path) -> Path | None:
+    """gate-sgf/ -> gate-sgf.tgz (skipped when already packed)."""
+    d = itd / "gate-sgf"
+    tgz = itd / "gate-sgf.tgz"
+    if not d.is_dir() or not any(d.iterdir()):
+        return None
+    if not tgz.exists():
+        with tarfile.open(tgz, "w:gz") as t:
+            t.add(d, arcname="gate-sgf")
+    return tgz
 
-    itd = f"{NODE_ROOT}/it{it:03d}"
-    tmp = Path(tempfile.mkdtemp(prefix=f"hf-it{it:03d}-"))
-    pulls = {
-        "train.pt": f"{itd}/train.pt",
-        "train.json": f"{itd}/train.json",
-        "eval.json": f"{itd}/eval.json",
-        "train.log": f"{itd}/train.log",
-        "shard.spbin": f"{itd}/selfplay/shard-0.spbin",
-        # gate SGFs too (small, useful for eyeballing match play)
-        "gate-sgf.tgz": f"{itd}/gate-sgf.tgz",
-    }
-    files = {}
-    for name, remote in pulls.items():
-        ok = node_get(remote, tmp / name)
-        print(f"  {name}: {'ok' if ok else 'MISSING'}", flush=True)
-        if ok:
-            files[name] = tmp / name
-    if "train.pt" not in files:
-        print("no checkpoint on node; aborting", file=sys.stderr)
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("it", type=int)
+    ap.add_argument("--root", default="/workspace/go-run-9x9")
+    ap.add_argument("--rename", default=None,
+                    help="also push the checkpoint under this name (gen0)")
+    args = ap.parse_args()
+    it, root = args.it, Path(args.root)
+    itd = root / f"it{it:03d}"
+
+    token = _env("HF_TOKEN")
+    if not token:
+        print("no HF_TOKEN", file=sys.stderr)
+        return 1
+    model_repo = _env("HF_MODEL_REPO") or "chriszhang01/go-value-net"
+    data_repo = _env("HF_DATASET_REPO") or "chriszhang01/go-selfplay"
+    ckpt = itd / "train.pt"
+    if not ckpt.exists():
+        print(f"no checkpoint at {ckpt}", file=sys.stderr)
         return 1
 
     summary = {"iteration": it, "board": 9, "komi": 7.5}
-    if "train.json" in files:
-        tj = json.loads(files["train.json"].read_text())
-        tj = tj.get("final", tj)
-        summary["train_final"] = {k: tj.get(k) for k in
+    tj = itd / "train.json"
+    if tj.exists():
+        tj = json.loads(tj.read_text())
+        fin = tj.get("final", tj)
+        summary["train_final"] = {k: fin.get(k) for k in
                                   ("policy_acc", "value_acc", "score_pdf",
                                    "score_cdf", "elapsed_s")}
-    if "train.log" in files:
-        summary["train_progress"] = parse_train_log(files["train.log"])
-    if "eval.json" in files:
-        ev = json.loads(files["eval.json"].read_text())
-        summary["gate"] = {k: ev.get(k) for k in
+        summary["train"] = {k: tj.get(k) for k in
+                            ("games", "trainable_plies", "steps",
+                             "elapsed_s")}
+        summary["train_final"].pop("elapsed_s", None)
+    tl = itd / "train.log"
+    if tl.exists():
+        summary["train_progress"] = parse_train_log(tl)
+    ev = itd / "eval.json"
+    if ev.exists():
+        e = json.loads(ev.read_text())
+        summary["gate"] = {k: e.get(k) for k in
                            ("games", "w", "l", "score_a", "waves",
                             "a_sims", "b_sims", "seed")}
-    else:
-        summary["gate"] = None
-    sp = tmp / "summary.json"
+    buf = root / "buffer.json"
+    if buf.exists():
+        summary["buffer"] = [(r["round"], len(r["games"]))
+                             for r in json.loads(buf.read_text())["rounds"]]
+    sp = itd / "summary.json"
     sp.write_text(json.dumps(summary, indent=2))
 
-    print("pushing model repo...", flush=True)
-    api.upload_file(path_or_fileobj=files["train.pt"],
-                    path_in_repo=f"9x9/it{it:03d}-train.pt",
-                    repo_id=model_repo, repo_type="model")
-    api.upload_file(path_or_fileobj=sp,
-                    path_in_repo=f"9x9/it{it:03d}-summary.json",
-                    repo_id=model_repo, repo_type="model")
-    if rename:
-        api.upload_file(path_or_fileobj=files["train.pt"],
-                        path_in_repo=f"9x9/{rename}.pt",
-                        repo_id=model_repo, repo_type="model")
-        api.upload_file(path_or_fileobj=sp,
-                        path_in_repo=f"9x9/{rename}-summary.json",
-                        repo_id=model_repo, repo_type="model")
-        print(f"aliased -> 9x9/{rename}.pt")
-    if "shard.spbin" in files:
-        print("pushing dataset repo (games)...", flush=True)
-        api.upload_file(path_or_fileobj=files["shard.spbin"],
-                        path_in_repo=f"9x9/it{it:03d}/shard-0.spbin",
-                        repo_id=data_repo, repo_type="dataset")
+    from huggingface_hub import HfApi
+    api = HfApi(token=token)
+
+    def up(local: Path, repo_path: str, repo_id: str, kind: str) -> None:
+        print(f"  {local.name} -> {repo_id}:{repo_path} "
+              f"({local.stat().st_size / 2**20:.0f} MB)", flush=True)
+        api.upload_file(path_or_fileobj=str(local), path_in_repo=repo_path,
+                        repo_id=repo_id, repo_type=kind)
+
+    print(f"pushing it{it:03d} from {itd}", flush=True)
+    up(ckpt, f"9x9/it{it:03d}-train.pt", model_repo, "model")
+    up(sp, f"9x9/it{it:03d}-summary.json", model_repo, "model")
+    tgz = pack_sgfs(itd)
+    if tgz:
+        up(tgz, f"9x9/it{it:03d}-gate-sgf.tgz", model_repo, "model")
+    if args.rename:
+        up(ckpt, f"9x9/{args.rename}.pt", model_repo, "model")
+        up(sp, f"9x9/{args.rename}-summary.json", model_repo, "model")
+    shard = itd / "selfplay" / "shard-0.spbin"
+    if shard.exists():
+        up(shard, f"9x9/it{it:03d}/shard-0.spbin", data_repo, "dataset")
     print("done")
     return 0
 

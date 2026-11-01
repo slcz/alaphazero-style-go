@@ -1,14 +1,17 @@
 # Training / Selfplay / Eval Loop
 
 One self-contained bootstrap loop: `scripts/selfplay_loop.py` runs N
-iterations of **generate → train → evaluate** on a single GPU box (the
-salad RTX 5090 node), with per-iteration HF backups done from the Mac
-(`scripts/hf_push_iter.py` — the HF token never touches the node).
+iterations of **generate → train → evaluate → back up** on a single GPU
+box (the salad RTX 5090 node). The node holds HF_TOKEN in
+`/workspace/go/.env` and does its own uploads.
 
     # on the node (tmux survives ssh disconnects):
     bash /workspace/go/scripts/node_run9x9_tmux.sh <iterations>
-    # on the Mac, after each gate lands:
-    python3 scripts/hf_push_iter.py <it>          # ckpt + summary + games
+
+Each iteration backs itself up to HF as soon as its gate lands — the node
+pushes, nothing comes back to the Mac (`hf_push_iter.py --root <work>` is
+called by the loop): the checkpoint, `itNNN-summary.json` and the gate SGF
+pack to the model repo, the shard to the dataset repo.
 
 ## Configuration (9x9 current)
 

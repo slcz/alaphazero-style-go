@@ -131,6 +131,20 @@ def update_buffer(work: Path, it: int, keep: float, seed: int) -> dict:
     return rec
 
 
+def push_iter(work: Path, it: int, rename: str | None = None) -> int:
+    """Back up the finished iteration to HF *from the node* (checkpoint,
+    summary json, gate SGFs to the model repo; the shard to the dataset
+    repo). Nothing comes back to the Mac."""
+    cmd = [sys.executable, "scripts/hf_push_iter.py", str(it),
+           "--root", str(work)]
+    if rename:
+        cmd += ["--rename", rename]
+    log(f"it{it}: pushing to HF" + (f" (+{rename})" if rename else ""))
+    rc = pump(cmd, work / f"it{it:03d}" / "push.log")
+    log(f"it{it}: HF push {'ok' if rc == 0 else f'FAILED ({rc})'}")
+    return rc
+
+
 def pump(cmd: list[str], log_path: Path, env: dict[str, str] | None = None,
          poll: int = 60) -> int:
     """Run a command, streaming its log tail so a long stage is not
@@ -345,6 +359,10 @@ def main() -> int:
                            "gate_games")}}
         with open(work / "loop.jsonl", "a") as fh:
             fh.write(json.dumps(rec) + "\n")
+
+        # durability: the checkpoint/summary/SGFs/shard leave the node as
+        # soon as the iteration is complete (gen0 aliases it001's net)
+        push_iter(work, it, rename="gen0" if it == 1 else None)
 
     log(f"done — best.pt sha {sha256(best)[:12]} | records in "
         f"{work / 'loop.jsonl'}")
