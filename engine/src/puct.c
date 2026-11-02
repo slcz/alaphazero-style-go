@@ -51,10 +51,25 @@ enum { WALKERS_DEFAULT = 8 };   /* walkers per game unless puct_set_walkers */
 static void *z_mem;        /* also the zone's initialized flag */
 static int   z_rows;       /* rows per bank */
 
-/* One row's storage: planes + logp + 2 value floats, then mask bytes. */
+/* One row's storage: planes + logp + 2 value floats + the score head's
+ * mean, then mask bytes. */
 #define ZONE_ROW_BYTES \
-    (((size_t)NN_TOTAL + PUCT_POLICY_SIZE + 2) * sizeof(float) \
+    (((size_t)NN_TOTAL + PUCT_POLICY_SIZE + 3) * sizeof(float) \
      + PUCT_POLICY_SIZE)
+
+/* Weight of the static score term in the search utility (KataGo's
+ * staticScoreUtilityFactor). 0 = pure win/loss, the pre-utility
+ * behaviour. Global: a property of the rules, not of a game. Resolved on
+ * first use so GO_SCORE_UTILITY works in every driver. */
+static double g_score_utility = -1.0;      /* unset */
+
+static double score_utility_weight(void) {
+    if (g_score_utility < 0.0) {
+        const char *e = getenv("GO_SCORE_UTILITY");
+        g_score_utility = e && *e ? atof(e) : 0.10;
+    }
+    return g_score_utility;
+}
 
 /* The landing zone — exactly one per system, two banks (double buffer):
  * walkers stage rows into the active bank while the io thread evaluates
@@ -66,6 +81,7 @@ static struct {
         uint8_t *mask;     /* cap × PUCT_POLICY_SIZE */
         float   *logp;     /* cap × PUCT_POLICY_SIZE */
         float   *wdl;      /* cap × 2 */
+        float   *score;    /* cap × 1, mover-view mean margin */
         int      used;     /* rows staged; frozen once the bank leaves FREE */
         int      state;    /* BANK_FREE .. BANK_READY, guarded by Z.mu */
         bool     flush;    /* pull this bank now, not after the peer's push
@@ -324,10 +340,33 @@ static void set_terminal(PuctNode *n, const State *st) {
                         ? PUCT_OUTC_WIN : PUCT_OUTC_LOSS;
 }
 
-/* Terminal backup value, mover's view. */
-static float terminal_value(const PuctNode *n) {
-    return (n->flags & PUCT_OUTC_WIN) ? 1.0f :
-           (n->flags & PUCT_OUTC_LOSS) ? -1.0f : 0.0f;
+/* Static score utility: a bounded, area-normalised function of the
+ * margin, in [-1,1] (KataGo's staticScoreValue shape). */
+static double score_utility(double margin, int b) {
+    return tanh(margin / (2.0 * (double)b));
+}
+
+/* Search utility of a value-head win/loss plus a score margin, both in
+ * the mover's view. The score term is what stops a decided game from
+ * looking uniform to the search. */
+static float utility(float wdl, double margin, int b) {
+    double w = score_utility_weight();
+    if (w <= 0.0)
+        return wdl;
+    return (float)((double)wdl + w * score_utility(margin, b));
+}
+
+/* Terminal backup value, mover's view: the TT result plus the score term
+ * from the exact margin, so terminals and net leaves share one scale. */
+static float terminal_value(const PuctNode *n, const State *st) {
+    float wdl = (n->flags & PUCT_OUTC_WIN) ? 1.0f :
+                (n->flags & PUCT_OUTC_LOSS) ? -1.0f : 0.0f;
+    if (score_utility_weight() <= 0.0)
+        return wdl;
+    float score = 0.0f;
+    state_termination(st, &score, NULL);      /* black view */
+    double margin = (st->side == BLACK) ? score : -score;
+    return utility(wdl, margin, st->b);
 }
 
 static double prior_of_q(uint16_t q) {   /* prior_q decode */
@@ -343,7 +382,7 @@ static void walker_deliver(PuctGame *g, PuctWalker *w);
  * logp + balanced value. */
 static void dummy_eval(void *ctx, PuctEvalOp op, int bank, int n,
                        const float *planes, const uint8_t *masks,
-                       float *logp, float *wdl) {
+                       float *logp, float *wdl, float *score) {
     (void)ctx; (void)bank; (void)planes; (void)masks;
     if (op != PUCT_EVAL_PUSH)
         return;
@@ -352,6 +391,7 @@ static void dummy_eval(void *ctx, PuctEvalOp op, int bank, int n,
                PUCT_POLICY_SIZE * sizeof(float));
         float *w = wdl + (size_t)r * 2;
         w[0] = 0.5f; w[1] = 0.5f;
+        score[r] = 0.0f;
     }
 }
 
@@ -365,13 +405,15 @@ void puct_zone_init(int max_rows) {
     float *planes = z_mem;
     float *logp = planes + (size_t)PUCT_BANKS * rows * NN_TOTAL;
     float *wdl = logp + (size_t)PUCT_BANKS * rows * PUCT_POLICY_SIZE;
-    uint8_t *mask = (uint8_t *)(wdl + (size_t)PUCT_BANKS * rows * 2);
+    float *score = wdl + (size_t)PUCT_BANKS * rows * 2;
+    uint8_t *mask = (uint8_t *)(score + (size_t)PUCT_BANKS * rows);
     for (int b = 0; b < PUCT_BANKS; b++)
         puct_zone_set_buffers(b,
                               planes + (size_t)b * rows * NN_TOTAL,
                               mask + (size_t)b * rows * PUCT_POLICY_SIZE,
                               logp + (size_t)b * rows * PUCT_POLICY_SIZE,
-                              wdl + (size_t)b * rows * 2);
+                              wdl + (size_t)b * rows * 2,
+                              score + (size_t)b * rows);
     z_rows = max_rows;
     if (!Z.eval)
         Z.eval = dummy_eval;
@@ -382,12 +424,21 @@ void puct_zone_init(int max_rows) {
 }
 
 void puct_zone_set_buffers(int bank, float *planes, uint8_t *mask,
-                           float *logp, float *wdl) {
+                           float *logp, float *wdl, float *score) {
     assert(bank >= 0 && bank < PUCT_BANKS);
     Z.banks[bank].planes = planes;
     Z.banks[bank].mask = mask;
     Z.banks[bank].logp = logp;
     Z.banks[bank].wdl = wdl;
+    Z.banks[bank].score = score;
+}
+
+void puct_set_score_utility(double w) {
+    g_score_utility = w > 0.0 ? w : 0.0;
+}
+
+double puct_score_utility(void) {
+    return score_utility_weight();
 }
 
 void puct_set_eval(PuctEvalFn fn, void *ctx) {
@@ -410,7 +461,7 @@ static bool io_pending(void) {
 static void bank_eval(PuctEvalOp op, int b, int n) {
     assert(Z.eval);
     Z.eval(Z.eval_ctx, op, b, n, Z.banks[b].planes, Z.banks[b].mask,
-           Z.banks[b].logp, Z.banks[b].wdl);
+           Z.banks[b].logp, Z.banks[b].wdl, Z.banks[b].score);
 }
 
 /* Advance every drivable bank one phase (push → pull → publish); mutex
@@ -721,7 +772,7 @@ static bool walker_step(PuctGame *g, PuctWalker *w) {
         state_termination(&w->st, NULL, NULL) != TERM_PLAYING) {
         if (!(n->flags & PUCT_TERMINAL))
             set_terminal(n, &w->st);
-        backup(g, w->idx, terminal_value(n));
+        backup(g, w->idx, terminal_value(n, &w->st));
         g->parks++;
         g->terminal_hits++;
         g->sims_done++;
@@ -776,7 +827,8 @@ static void walker_deliver(PuctGame *g, PuctWalker *w) {
                     Z.banks[b].logp + (size_t)off * PUCT_POLICY_SIZE, &w->st);
     if (w->idx != g->root) {
         const float *wd = Z.banks[b].wdl + (size_t)off * 2;
-        backup(g, w->idx, wd[0] - wd[1]);
+        float sc = Z.banks[b].score[off];
+        backup(g, w->idx, utility(wd[0] - wd[1], sc, g->b));
         g->sims_done++;
     }
     w->row = -1;

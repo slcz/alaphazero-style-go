@@ -58,7 +58,7 @@ def setup(ckpt: str, device: str, rows: int, banks: int = 1) -> dict:
                   ev_free=[torch.cuda.Event() for _ in range(banks)])
 
     sets = []
-    out = {"planes": [], "mask": [], "logp": [], "wdl": []}
+    out = {"planes": [], "mask": [], "logp": [], "wdl": [], "score": []}
     for _ in range(banks):
         try:
             pin = cuda
@@ -70,7 +70,8 @@ def setup(ckpt: str, device: str, rows: int, banks: int = 1) -> dict:
              "m": torch.zeros(rows, NN_POLICY, dtype=torch.bool,
                               pin_memory=pin),
              "lp": torch.empty(rows, NN_POLICY, pin_memory=pin),
-             "w": torch.empty(rows, 2, pin_memory=pin)}
+             "w": torch.empty(rows, 2, pin_memory=pin),
+             "sc": torch.empty(rows, pin_memory=pin)}
         if cuda:
             # device-side buffers per bank (static addresses), sized at
             # the MAX stride: the active board size is sliced per batch
@@ -82,6 +83,7 @@ def setup(ckpt: str, device: str, rows: int, banks: int = 1) -> dict:
                                   device=device)
             s["polf"] = torch.empty(rows, NN_POLICY, device=device)
             s["wdlf"] = torch.empty(rows, 2, device=device)
+            s["scf"] = torch.empty(rows, device=device)
         else:
             s["xd"] = torch.empty(rows, NN_TOKENS, NN_TOKEN_DIM,
                                   device=device,
@@ -93,6 +95,7 @@ def setup(ckpt: str, device: str, rows: int, banks: int = 1) -> dict:
         out["mask"].append(s["m"].data_ptr())
         out["logp"].append(s["lp"].data_ptr())
         out["wdl"].append(s["w"].data_ptr())
+        out["score"].append(s["sc"].data_ptr())
     # CUDA inference: FP8 weights + static-shape compile. NN_B (board
     # size) enables the fast path: one graph per size, waves always run
     # at the full padded row count (tail rows are stale, sliced off on
@@ -160,6 +163,15 @@ def raw(planes: bytes, mask: bytes, b: int) -> tuple:
             stats.cpu().numpy().astype(np.float32).tobytes())
 
 
+def _score_mean(logits: torch.Tensor) -> torch.Tensor:
+    """Score head logits [n, SCORE_BINS] -> mean margin in points."""
+    from go_ai.net.model import SCORE_BINS, SCORE_MIN
+    bins = torch.arange(SCORE_BINS, device=logits.device,
+                        dtype=torch.float32) + SCORE_MIN
+    p = torch.softmax(logits.float(), -1)
+    return (p * bins).sum(-1)
+
+
 def _active_b(bank: int, n: int) -> int:
     """Board size of the staged rows: every row's legal set includes the
     pass slot (b²), so the last active mask column is exactly b²."""
@@ -215,6 +227,7 @@ def push(bank: int, n: int) -> int:
                     out["policy_logp"][:n, :b * b + 1])
                 s["wdlf"][:n].copy_(
                     torch.softmax(out["wdl"][:n].float(), dim=-1))
+                s["scf"][:n].copy_(_score_mean(out["score"][:n]))
                 _S["ev_fwd"][bank].record(_S["s_compute"])
                 return n
             if _S.get("bf16", True):
@@ -227,6 +240,7 @@ def push(bank: int, n: int) -> int:
             # wdl leaves the model as raw logits; the search backs up
             # w[0]-w[1], which is 2pW-1 only after a softmax
             s["wdlf"][:n].copy_(torch.softmax(out["wdl"].float(), dim=-1))
+            s["scf"][:n].copy_(_score_mean(out["score"]))
             _S["ev_fwd"][bank].record(_S["s_compute"])
     return n
 
@@ -239,6 +253,7 @@ def pull(bank: int, n: int) -> int:
     with torch.cuda.stream(_S["s_d2h"]):
         s["lp"][:n].copy_(s["polf"][:n], non_blocking=True)
         s["w"][:n].copy_(s["wdlf"][:n], non_blocking=True)
+        s["sc"][:n].copy_(s["scf"][:n], non_blocking=True)
         _S["ev_free"][bank].record(_S["s_d2h"])
     return n
 

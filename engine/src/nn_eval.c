@@ -21,11 +21,12 @@ static int nn_ready = 0;
 
 static void nn_eval(void *ctx, PuctEvalOp op, int bank, int n,
                     const float *planes, const uint8_t *masks, float *logp,
-                    float *wdl) {
+                    float *wdl, float *score) {
     (void)planes;
     (void)masks;
     (void)logp;
     (void)wdl;
+    (void)score;
     NnCtx *c = ctx;
     const char *meth = op == PUCT_EVAL_PUSH ? "push"
                      : op == PUCT_EVAL_PULL ? "pull" : "wait_ready";
@@ -80,7 +81,8 @@ int puct_attach_nn(const char *ckpt, const char *device, int rows) {
         PyObject *mv = PyDict_GetItemString(res, "mask");
         PyObject *lv = PyDict_GetItemString(res, "logp");
         PyObject *wv = PyDict_GetItemString(res, "wdl");
-        if (!pv || !mv || !lv || !wv ||
+        PyObject *sv = PyDict_GetItemString(res, "score");
+        if (!pv || !mv || !lv || !wv || !sv ||
             !PyList_Check(pv) || PyList_Size(pv) != PUCT_BANKS) {
             Py_DECREF(res);
             Py_DECREF(mod);
@@ -95,7 +97,9 @@ int puct_attach_nn(const char *ckpt, const char *device, int rows) {
                               (float *)PyLong_AsUnsignedLongLong(
                                   PyList_GetItem(lv, b)),
                               (float *)PyLong_AsUnsignedLongLong(
-                                  PyList_GetItem(wv, b)));
+                                  PyList_GetItem(wv, b)),
+                              (float *)PyLong_AsUnsignedLongLong(
+                                  PyList_GetItem(sv, b)));
     }
     NnCtx *c = malloc(sizeof *c);
     c->worker = mod;
