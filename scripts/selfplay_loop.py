@@ -234,6 +234,8 @@ def generate(args, best: Path, unit_dir: Path, seed: int) -> int:
     # board size; see go_ai/net/nn_worker.py setup()).
     env = dict(os.environ, NN_B=str(args.b),
                NN_BF16="1", NN_COMPILE="1")
+    if args.score_utility is not None:
+        env["GO_SCORE_UTILITY"] = str(args.score_utility)
     cmd = [str(SELFPLAY), str(best), str(unit_dir), str(args.games),
            str(args.b), str(args.komi), str(args.sims), str(args.pool),
            str(args.rows), str(args.sample_plys), str(args.max_plys),
@@ -302,6 +304,9 @@ def main() -> int:
     ap.add_argument("--epochs", type=int, default=1)
     ap.add_argument("--batch", type=int, default=4096)
     ap.add_argument("--lr", type=float, default=2e-4)
+    ap.add_argument("--score-utility", type=float, default=None,
+                    help="static score term in the search utility (default: "
+                         "the engine's, 0.10; 0 = pure win/loss)")
     ap.add_argument("--buffer-keep", type=float, default=1 / 3,
                     help="fraction of an old round kept per iteration "
                          "(1/3 → 1, 1/3, 1/9 ... of successive rounds)")
@@ -333,6 +338,8 @@ def main() -> int:
             log(f"seeded best.pt from {init}")
         else:
             random_init_checkpoint(best, args.seed)
+    su = args.score_utility if args.score_utility is not None else 0.10
+    log(f"search utility: w_score={su}  buffer_keep={args.buffer_keep}")
     log(f"work {work} | best {best.name} sha {sha256(best)[:12]} | "
         f"{'forever' if args.forever else args.iterations} x "
         f"({args.games} games @ {args.b}x{args.b} "
