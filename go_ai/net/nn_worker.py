@@ -125,11 +125,12 @@ def setup(ckpt: str, device: str, rows: int, banks: int = 1) -> dict:
 
 
 def raw(planes: bytes, mask: bytes, b: int) -> tuple:
-    """One position, no search → (policy, wdl, ownership) as raw bytes.
+    """One position, no search → (policy, wdl, own, score) as raw bytes.
 
     Policy is over the b*b+1 slots, wdl is [pW, pL], ownership is the
-    mover-view P(each point ends up mine) in [0,1]. Off the search hot
-    path (GTP analysis), so it allocates instead of using the banks."""
+    mover-view P(each point ends up mine) in [0,1], score is the mover-view
+    mean margin in points (the score head's expectation). Off the search
+    hot path (GTP analysis), so it allocates instead of using the banks."""
     import numpy as np
     T = b * b
     x = np.frombuffer(planes, dtype=np.float32).reshape(NN_TOKENS,
@@ -147,7 +148,12 @@ def raw(planes: bytes, mask: bytes, b: int) -> tuple:
         pol = out["policy_logp"][0, :T + 1].float().exp().cpu().numpy()
         wdl = torch.softmax(out["wdl"][0].float(), -1).cpu().numpy()
         own = torch.sigmoid(out["own"][0].float()).cpu().numpy()
-    return pol.tobytes(), wdl.tobytes(), own.tobytes()
+        from go_ai.net.model import SCORE_BINS, SCORE_MIN
+        bins = torch.arange(SCORE_BINS, device=out["score"].device,
+                            dtype=torch.float32) + SCORE_MIN
+        mean = (torch.softmax(out["score"][0].float(), -1) * bins).sum()
+    return (pol.tobytes(), wdl.tobytes(), own.tobytes(),
+            mean.reshape(1).cpu().numpy().tobytes())
 
 
 def _active_b(bank: int, n: int) -> int:
