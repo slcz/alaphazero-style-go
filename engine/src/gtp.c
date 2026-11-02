@@ -33,13 +33,18 @@ static const char *GTP_COMMANDS[] = {
     "play", "genmove",
     /* analysis: Sabaki probes analyze / kata-analyze / lz-analyze
      * (engines.analyze_commands) and renders `analyze`'s per-move list */
-    "analyze", "showstate",
+    "analyze", "showstate", "showmem",
 };
 
 static PuctGame *g;
 static int g_sims = 400;
 static int g_analyze_interval = 10;   /* report interval when the GUI
                                        * does not send one, centiseconds */
+static int g_analyze_sims = 0;        /* cap per analyze session (0 = the
+                                       * genmove budget); without a cap a
+                                       * GUI left streaming would fill the
+                                       * node block and lose sims */
+static int g_block_mb = 0;            /* explicit block size, 0 = auto */
 
 static void respond(const char *id, const char *fmt, const char *payload) {
     if (id && *id)
@@ -51,6 +56,41 @@ static void respond(const char *id, const char *fmt, const char *payload) {
 }
 
 /* payload written between these must be newline-terminated */
+/* Bytes of node block per simulated playout. Measured at 9x9: a 4 MB
+ * block carries roughly 100 playouts before the tree stops packing, i.e.
+ * ~4 MB / (100 * 81 points). A playout costs one expanded node plus one
+ * edge array of (b*b+1) 8-byte edges, so the requirement scales with b^2
+ * and with the playout budget. */
+#define PUCT_BYTES_PER_SIM_POINT 500.0
+#define PUCT_BLOCK_FLOOR (64u << 20)
+
+static size_t block_bytes_for(int sims, int b) {
+    if (g_block_mb > 0)
+        return (size_t)g_block_mb << 20;
+    double need = (double)sims * (double)(b * b) * PUCT_BYTES_PER_SIM_POINT;
+    if (need < (double)PUCT_BLOCK_FLOOR)
+        need = (double)PUCT_BLOCK_FLOOR;
+    return (size_t)need;
+}
+
+static size_t g_block;                /* bytes of the current node block */
+static int g_walkers = 8;
+
+/* Fresh game at (b, komi, maxply) sized for the playout budget. mmap is
+ * lazy, so an oversized block costs address space, not memory. */
+static int game_replant(int b, float komi, int maxply) {
+    size_t want = block_bytes_for(g_sims, b);
+    PuctGame *ng = puct_game_new(want, b, komi, maxply);
+    if (!ng)
+        return -1;
+    puct_set_walkers(ng, g_walkers);
+    if (g)
+        puct_game_free(g);
+    g = ng;
+    g_block = want;
+    return 0;
+}
+
 static void respond_start(const char *id) {
     printf("=%s", id && *id ? id : "");
     putchar(' ');
@@ -254,22 +294,41 @@ static void do_analyze(const char *id, char *args, float score) {
     if (interval < 1)
         interval = 1;
 
-    puct_think(g, 64);                      /* so the first frame has
+    /* Bounded session: a GUI that just leaves us streaming would keep
+     * growing the tree until the node block cannot pack and playouts are
+     * silently dropped, so stop at the budget and close. */
+    int budget = g_analyze_sims > 0 ? g_analyze_sims : g_sims;
+    const int burst = 64;
+    int done = budget < burst ? budget : burst;
+    puct_think(g, done);                    /* so the first frame has
                                              * real candidates */
     printf("=%.*s\n", id && *id ? (int)(strlen(id) + 1) : 0,
            id && *id ? id : "");            /* "=" or "=<id> ", alone */
     emit_analyze(score);
     double next = mono_s() + interval / 100.0;
-    while (!stdin_ready()) {
-        puct_think(g, 64);
+    while (done < budget && !stdin_ready()) {
+        int n = budget - done < burst ? budget - done : burst;
+        puct_think(g, n);
+        done += n;
         double t = mono_s();
         if (t >= next) {
             emit_analyze(score);
             next = t + interval / 100.0;
         }
     }
+    emit_analyze(score);                    /* final state */
     printf("\n");                           /* close the response */
     fflush(stdout);
+}
+
+/* showmem — node-block accounting, so the sizing can be checked against
+ * what the search actually needs. */
+static void do_showmem(const char *id) {
+    respond_start(id);
+    printf("block_mb %.1f  oom %u  compact %u  sims_cap %d\n",
+           (double)g_block / 1048576.0, puct_oom_count(g),
+           puct_compact_count(g), g_sims);
+    respond_end();
 }
 
 /* showstate — a text report of the two heads that are otherwise only
@@ -332,8 +391,19 @@ int main(int argc, char **argv) {
     go_init();
     rng_seed(((uint64_t)time(NULL) << 32) ^ (uint64_t)getpid()
              * 0x9E3779B97F4A7C15ull);
-    g = puct_game_new(0, 19, 7.5f, maxply);
-    if (!g) {
+    const char *ienv = getenv("GO_ANALYZE_INTERVAL");
+    if (ienv && *ienv)
+        g_analyze_interval = atoi(ienv);
+    const char *aenv = getenv("GO_ANALYZE_SIMS");
+    if (aenv && *aenv)
+        g_analyze_sims = atoi(aenv);
+    const char *benv = getenv("GO_BLOCK_MB");
+    if (benv && *benv)
+        g_block_mb = atoi(benv);
+    const char *wenv2 = getenv("PUCT_WALKERS");
+    if (wenv2 && *wenv2)
+        g_walkers = atoi(wenv2);
+    if (game_replant(19, 7.5f, maxply) != 0) {
         fprintf(stderr, "gtp: game alloc failed\n");
         return 1;
     }
@@ -413,8 +483,8 @@ int main(int argc, char **argv) {
             char *v = strtok(args, " \t\n");
             int b = v ? atoi(v) : 0;
             if (b < 2 || b > GO_MAX_B ||
-                puct_game_reconfig(g, b, puct_state(g)->komi,
-                                   puct_state(g)->maxply) != 0) {
+                game_replant(b, puct_state(g)->komi,
+                             puct_state(g)->maxply) != 0) {
                 respond_err(id, "unsupported board size");
                 break;
             }
@@ -462,6 +532,9 @@ int main(int argc, char **argv) {
         }
         case 12:
             do_showstate(id);
+            break;
+        case 13:
+            do_showmem(id);
             break;
         default:
             respond_err(id, "unknown command");

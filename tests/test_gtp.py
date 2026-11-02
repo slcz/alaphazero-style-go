@@ -15,7 +15,9 @@ class Gtp:
         env = {"GO_SIMS": str(simss)}
         if ckpt:
             env["PUCT_CKPT"] = ckpt
-            env["GO_ANALYZE_SIMS"] = str(simss)
+            # keep an analyze session open long enough to exercise the
+            # abort path (it otherwise stops at its own playout budget)
+            env["GO_ANALYZE_SIMS"] = "100000"
         env.update(extra_env or {})
         self.p = subprocess.Popen(
             [str(GTP), device, "64"], stdin=subprocess.PIPE,
@@ -43,23 +45,27 @@ class Gtp:
         self.p.stdin.flush()
         head = self.p.stdout.readline()
         assert head.rstrip() == "=", repr(head)
-        out = []
-        for _ in range(lines):
+        out, closed = [], False
+        while len(out) < lines:
             l = self.p.stdout.readline()
             if l == "":
                 raise AssertionError("engine died: " + "".join(out))
-            out.append(l)
-        self.p.stdin.write(abort + "\n")
-        self.p.stdin.flush()
-        while True:
-            l = self.p.stdout.readline()
-            if l == "":
-                raise AssertionError("engine died in stream")
-            if l == "\n":
+            if l == "\n":                 # session hit its playout budget
+                closed = True
                 break
             out.append(l)
-        assert self.p.stdout.readline().strip().startswith("=2")
-        assert self.p.stdout.readline() == "\n"      # its own terminator
+        if not closed:                     # still streaming: abort like Sabaki
+            self.p.stdin.write(abort + "\n")
+            self.p.stdin.flush()
+            while True:
+                l = self.p.stdout.readline()
+                if l == "":
+                    raise AssertionError("engine died in stream")
+                if l == "\n":
+                    break
+                out.append(l)
+            assert self.p.stdout.readline().strip().startswith("=2")
+            assert self.p.stdout.readline() == "\n"  # its own terminator
         return "".join(out)
 
     def close(self):

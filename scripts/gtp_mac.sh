@@ -11,6 +11,10 @@
 #               (the forward is ~0.8 ms/row and it dominates), so:
 #               400 -> 0.5 s, 2000 -> 2.3 s, 5000 -> 6 s, 10000 -> 12 s
 #   GO_MAXPLY   ply wall that triggers TT adjudication (default 400)
+#   GO_BLOCK_MB node block in MB (default: auto, ~4 MB per 100 sims at
+#               9x9 scaled by board area; 2000 sims on 9x9 -> ~77 MB)
+#   GO_ANALYZE_SIMS  playouts per analyze session (default = GO_SIMS);
+#               the stream stops there instead of growing the tree forever
 #   GO_DEVICE   mps | cpu | dummy    (default mps)
 #   PUCT_WALKERS concurrent evals (default 4)
 #
