@@ -1,0 +1,36 @@
+#!/bin/bash
+# node_loop9.sh — the supervisor: the 9x9 selfplay loop, forever.
+#
+# Every stage is resumable and each finished iteration is recorded in
+# loop.jsonl, so a crash only costs the stage that was in flight: this
+# restarts the loop, which resumes at the next unrecorded iteration and
+# skips any iteration already backed up to HF (push.ok).
+cd /workspace/go || exit 1
+export PUCT_WALKERS=4 PUCT_TASKS=8 NN_B=9 NN_BF16=1 NN_COMPILE=1
+export NN_WAVE_STATS=1          # wave fill telemetry -> loop.out
+WORK=/workspace/go-run-9x9
+mkdir -p "$WORK"
+while true; do
+    # A killed loop leaves its stage child orphaned (pump() does not use a
+    # process group), and a stray selfplay_nn would write the same shard as
+    # the restarted one. Anything still alive here is an orphan.
+    pkill -9 -f selfplay_nn 2>/dev/null
+    pkill -9 -f engine_mux 2>/dev/null
+    pkill -9 -f train_round.py 2>/dev/null
+    sleep 2
+    python3 scripts/selfplay_loop.py \
+        --work-dir "$WORK" \
+        --b 9 --komi 7.5 \
+        --forever \
+        --games 30000 \
+        --sims 200 --fast-sims 40 --fast-p 0.75 \
+        --pool 2048 --rows 4096 \
+        --sample-plys 10 --max-plys 250 \
+        --epochs 1 --batch 3072 --lr 0.01 \
+        --gate-games 400 --gate-sims 200 \
+        --device cuda --seed 1 \
+        >> "$WORK/loop.out" 2>&1
+    echo "[$(date +%H:%M:%S)] loop exited rc=$? — restarting in 30s" \
+        >> "$WORK/loop.out"
+    sleep 30
+done

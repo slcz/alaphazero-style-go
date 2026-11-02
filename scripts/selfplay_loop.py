@@ -114,12 +114,13 @@ def update_buffer(work: Path, it: int, keep: float, seed: int) -> dict:
             rounds.append((r, n))
     rec = {"version": 1, "keep": keep, "seed": seed, "iteration": it,
            "rounds": []}
+    newest = rounds[-1][1] if rounds else 0
     for r, n in rounds:
         rng = random.Random(seed * 7919 + r)
         p = keep ** (it - r)
         games = [g for g in range(n) if rng.random() < p]
-        if not games:
-            continue
+        if len(games) < 0.005 * newest:      # < 0.5% of the draw: drop the
+            continue                          # round (bounds the window)
         rec["rounds"].append({
             "round": r, "shard": f"it{r:03d}/selfplay/shard-0.spbin",
             "count": n, "games": games})
@@ -127,14 +128,32 @@ def update_buffer(work: Path, it: int, keep: float, seed: int) -> dict:
     path.write_text(json.dumps(rec))
     log(f"it{it}: buffer {[(x['round'], len(x['games'])) for x in rec['rounds']]}"
         f" = {sum(len(x['games']) for x in rec['rounds'])} games")
+    prune(work, it, {x["round"] for x in rec["rounds"]})
     push_buffer(path, it)
     return rec
+
+
+def prune(work: Path, it: int, live: set) -> None:
+    """Bound disk for a run that never ends: row caches of rounds the
+    buffer dropped, and mid-training checkpoints of finished rounds."""
+    for f in work.glob("it*/selfplay/rows-*.npz"):
+        if int(f.parent.parent.name[2:]) not in live:
+            f.unlink(missing_ok=True)
+    for f in work.glob("it*/train.ck.pt"):
+        if int(f.parent.name[2:]) < it:
+            f.unlink(missing_ok=True)
 
 
 def push_iter(work: Path, it: int, rename: str | None = None) -> int:
     """Back up the finished iteration to HF *from the node* (checkpoint,
     summary json, gate SGFs to the model repo; the shard to the dataset
-    repo). Nothing comes back to the Mac."""
+    repo). Nothing comes back to the Mac. `push.ok` memoizes it so a
+    restart does not re-upload."""
+    mark = work / f"it{it:03d}" / "push.ok"
+    if mark.exists() and (rename is None
+                          or f"rename={rename}" in mark.read_text()):
+        log(f"it{it}: already on HF — push skipped")
+        return 0
     cmd = [sys.executable, "scripts/hf_push_iter.py", str(it),
            "--root", str(work)]
     if rename:
@@ -142,6 +161,9 @@ def push_iter(work: Path, it: int, rename: str | None = None) -> int:
     log(f"it{it}: pushing to HF" + (f" (+{rename})" if rename else ""))
     rc = pump(cmd, work / f"it{it:03d}" / "push.log")
     log(f"it{it}: HF push {'ok' if rc == 0 else f'FAILED ({rc})'}")
+    if rc == 0:
+        with open(mark, "a") as fh:
+            fh.write(f"{time.strftime('%FT%T')} rename={rename}\n")
     return rc
 
 
@@ -252,7 +274,11 @@ def main() -> int:
     ap.add_argument("--init-ckpt")
     ap.add_argument("--b", type=int, default=7)
     ap.add_argument("--komi", type=float, default=9.5)
-    ap.add_argument("--iterations", type=int, default=20)
+    ap.add_argument("--iterations", type=int, default=20,
+                    help="stop after this iteration (ignored with --forever)")
+    ap.add_argument("--forever", action="store_true",
+                    help="run until stopped; iteration numbers advance from "
+                         "loop.jsonl on every restart")
     ap.add_argument("--games", type=int, default=30000)
     ap.add_argument("--sims", type=int, default=300)
     ap.add_argument("--fast-sims", type=int, default=50)
@@ -296,11 +322,22 @@ def main() -> int:
         else:
             random_init_checkpoint(best, args.seed)
     log(f"work {work} | best {best.name} sha {sha256(best)[:12]} | "
-        f"{args.iterations} x ({args.games} games @ {args.b}x{args.b} "
+        f"{'forever' if args.forever else args.iterations} x "
+        f"({args.games} games @ {args.b}x{args.b} "
         f"{args.sims}/{args.fast_sims} sims -> {args.epochs} epoch(s) -> "
         f"{args.gate_games}-game gate @ {args.adopt_min})")
 
-    for it in range(1, args.iterations + 1):
+    # resume point: every completed iteration is in loop.jsonl, and stage
+    # caches mean a restart never redoes work that landed
+    it = 1
+    if (work / "loop.jsonl").exists():
+        done = [json.loads(l)["iteration"] for l in
+                (work / "loop.jsonl").read_text().splitlines() if l.strip()]
+        if done:
+            it = max(done) + 1
+            log(f"resuming at it{it:03d}")
+    limit = None if args.forever else args.iterations
+    while limit is None or it <= limit:
         d = work / f"it{it:03d}"
         unit = d / "selfplay"
         d.mkdir(parents=True, exist_ok=True)
@@ -357,12 +394,13 @@ def main() -> int:
                           ("b", "komi", "sims", "fast_sims", "fast_p",
                            "buffer_keep", "lr", "batch", "epochs",
                            "gate_games")}}
+        # durability first: the checkpoint/summary/SGFs/shard leave the
+        # node (gen0 aliases it001's net), THEN the iteration is recorded —
+        # a crash in between re-runs the push-free path on restart
+        push_iter(work, it, rename="gen0" if it == 1 else None)
         with open(work / "loop.jsonl", "a") as fh:
             fh.write(json.dumps(rec) + "\n")
-
-        # durability: the checkpoint/summary/SGFs/shard leave the node as
-        # soon as the iteration is complete (gen0 aliases it001's net)
-        push_iter(work, it, rename="gen0" if it == 1 else None)
+        it += 1
 
     log(f"done — best.pt sha {sha256(best)[:12]} | records in "
         f"{work / 'loop.jsonl'}")

@@ -6,7 +6,13 @@ box (the salad RTX 5090 node). The node holds HF_TOKEN in
 `/workspace/go/.env` and does its own uploads.
 
     # on the node (tmux survives ssh disconnects):
-    bash /workspace/go/scripts/node_run9x9_tmux.sh <iterations>
+    bash /workspace/go/scripts/node_run9x9_tmux.sh
+
+It runs FOREVER: `node_loop9.sh` supervises it and restarts after a crash
+(killing orphaned stage children first), the loop resumes at the next
+unrecorded iteration from `loop.jsonl`, and `push.ok` keeps it from
+re-uploading rounds that already landed. To stop it: `tmux kill-session
+-t go9`.
 
 Each iteration backs itself up to HF as soon as its gate lands — the node
 pushes, nothing comes back to the Mac (`hf_push_iter.py --root <work>` is
@@ -115,7 +121,12 @@ writes `<work>/buffer.json`:
 ## Iteration bookkeeping
 
 - `loop.jsonl` (work dir): one record per iteration — games, gate
-  score, checkpoint sha, elapsed, buffer params.
+  score, checkpoint sha, elapsed, buffer params. It is also the resume
+  point (and is written AFTER the HF push, so a crash in between retries
+  nothing). `itNNN/push.ok` memoizes the upload.
+- Disk stays bounded: rounds whose kept games fall below 0.5% of the
+  newest round leave the buffer, and their row caches + old
+  `train.ck.pt` files are deleted.
 - Node layout: `/workspace/go-run-9x9/{best.pt, it001/, it002/, ...}`,
   each `itNNN/` = `{train.pt, train.json, train.log, eval.json,
   generate.log, selfplay/shard-0.spbin, gate-sgf/}`.
