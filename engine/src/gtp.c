@@ -15,7 +15,6 @@
  * when the search's best move is pass.
  */
 #define _POSIX_C_SOURCE 200809L
-#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -32,14 +31,13 @@ static const char *GTP_COMMANDS[] = {
     "list_commands", "quit", "boardsize", "clear_board", "komi",
     "play", "genmove",
     /* analysis: Sabaki probes analyze / kata-analyze / lz-analyze
-     * (engines.analyze_commands) and draws the winrate bar plus the
-     * ownership heatmap from the trailing `ownership` array */
-    "kata-analyze", "analyze", "genmove_analyze", "showownership",
+     * (engines.analyze_commands) and renders `analyze`'s per-move list */
+    "analyze", "showownership",
 };
 
 static PuctGame *g;
 static int g_sims = 400;
-static int g_analyze_interval = 10;   /* centiseconds between report lines */
+static int g_analyze_sims = 400;      /* one analyze report's budget */
 
 static void respond(const char *id, const char *fmt, const char *payload) {
     if (id && *id)
@@ -187,20 +185,6 @@ static int ownership_order(int b, int idx) {
     return (b - 1 - ky) * b + x;
 }
 
-static double mono_s(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
-}
-
-/* Is there input waiting on stdin (a new command, a raw newline, or EOF)?
- * KataGo's analyze commands run until the GUI speaks again. */
-static int stdin_ready(int ms) {
-    struct pollfd p = { .fd = 0, .events = POLLIN };
-    int r = poll(&p, 1, ms);
-    return r > 0 && (p.revents & (POLLIN | POLLHUP | POLLERR));
-}
-
 /* Top child indices by visits, plus the root's winrate. */
 static int root_view(uint16_t *mvs, uint32_t *vis, double *q, float *pr,
                      int *ord, double *wr) {
@@ -213,10 +197,13 @@ static int root_view(uint16_t *mvs, uint32_t *vis, double *q, float *pr,
     return top;
 }
 
-/* Sabaki dialect (docs/guides/engine-analysis-integration.md): ONE line
- * per update, space-separated info groups. winrate as a float in [0,1],
- * scoreLead in points for the side to move. */
-static void emit_sabaki(double score) {
+/* analyze <color> <interval> — one report in Sabaki's format
+ * (docs/guides/engine-analysis-integration.md): a single line of
+ * space-separated `info` groups, winrate as a float in [0,1], scoreLead in
+ * points for the side to move. The interval is accepted and ignored: we
+ * answer once per command, so Sabaki gets a fresh report whenever it asks
+ * (on every position change). */
+static void do_analyze(const char *id, char *args, float score) {
     const State *s = puct_state(g);
     int b = s->b;
     uint16_t mvs[MAX_MOVES];
@@ -225,8 +212,13 @@ static void emit_sabaki(double score) {
     float pr[MAX_MOVES];
     int ord[MAX_MOVES];
     double wr;
+    (void)args;                                  /* color, interval */
+    if (puct_game_over(g))
+        return respond(id, "%s", "info");
+    puct_think(g, g_analyze_sims);
     int top = root_view(mvs, vis, q, pr, ord, &wr);
-    (void)wr;
+
+    respond_start(id);
     printf("info");
     for (int k = 0; k < top; k++) {
         int i = ord[k];
@@ -239,104 +231,11 @@ static void emit_sabaki(double score) {
             printf(" info");
     }
     printf("\n");
-    fflush(stdout);
-}
-
-/* KataGo dialect (kata-analyze): info lines, rootInfo, ownership array in
- * [-1,1] from the side to move, row-major from the top-left. */
-static void emit_kata(float *own, double score) {
-    const State *s = puct_state(g);
-    int b = s->b, n = b * b;
-    uint16_t mvs[MAX_MOVES];
-    uint32_t vis[MAX_MOVES];
-    double q[MAX_MOVES];
-    float pr[MAX_MOVES];
-    int ord[MAX_MOVES];
-    double wr;
-    int top = root_view(mvs, vis, q, pr, ord, &wr);
-    for (int k = 0; k < top; k++) {
-        int i = ord[k];
-        char v[6];
-        move_to_gtp(mvs[i], b, v);
-        printf("info move %s visits %u winrate %.6f prior %.6f order %d "
-               "scoreLead %.6f pv %s\n", v, vis[i], 0.5 + 0.5 * q[i],
-               (double)pr[i], k, score, v);
-    }
-    uint32_t rv;
-    double wsum;
-    puct_root_stats(g, &rv, &wsum);
-    printf("rootInfo visits %u winrate %.6f scoreLead %.6f\n", rv, wr, score);
-    printf("ownership");
-    for (int i = 0; i < n; i++)
-        printf(" %.3f", 2.0 * own[ownership_order(b, i)] - 1.0);
-    printf("\n");
-    fflush(stdout);
-}
-
-/* analyze / kata-analyze / genmove_analyze [color] [interval CS] — stream
- * a report every `interval` centiseconds (default GO_ANALYZE_INTERVAL)
- * while searching, and stop as soon as anything arrives on stdin. With
- * `genmove` it then plays the best move and ends with `play <vertex>`. */
-static void do_analyze(const char *id, char *args, int katago, int genmove) {
-    const State *s = puct_state(g);
-    int b = s->b;
-    int interval = g_analyze_interval;
-
-    for (char *t = strtok(args, " \t\n"); t; t = strtok(NULL, " \t\n")) {
-        if (strcmp(t, "interval") == 0) {
-            char *v = strtok(NULL, " \t\n");
-            if (v)
-                interval = atoi(v);
-        } else if (*t >= '0' && *t <= '9') {
-            interval = atoi(t);
-        }                                   /* else: the color, ignored */
-    }
-    if (interval < 1)
-        interval = 1;
-
-    if (puct_game_over(g)) {
-        respond(id, "%s", "play pass");
-        return;
-    }
-    float own[GO_MAX_POINTS];
-    float score;
-    if (puct_nn_raw(s, NULL, NULL, own, &score) != 0)
-        return respond_err(id, "no evaluator");
-
-    puct_think(g, 64);                      /* seed the tree so the first
-                                             * frame has real candidates */
-    respond_start(id);
-    if (katago)
-        emit_kata(own, score);              /* instant first frame */
-    else
-        emit_sabaki(score);
-    double next = mono_s() + interval / 100.0;
-    for (;;) {
-        puct_think(g, 64);                  /* a small burst, then check */
-        double t = mono_s();
-        if (t >= next) {
-            if (katago)
-                emit_kata(own, score);
-            else
-                emit_sabaki(score);
-            next = t + interval / 100.0;
-        }
-        if (stdin_ready(0))
-            break;
-    }
-    if (genmove) {
-        Move mv = puct_best_move(g);
-        char v[6];
-        move_to_gtp(mv, b, v);
-        puct_play(g, mv);
-        printf("play %s\n", v);
-    }
     respond_end();
 }
 
 /* showownership — the ownership head as a map plus the numbers, in the
- * same order as the kata-analyze array. X = current player, O = the
- * opponent, '.' = unsettled. */
+ * board order. X = current player, O = the opponent, '.' = unsettled. */
 static void do_showownership(const char *id) {
     const State *s = puct_state(g);
     int b = s->b;
@@ -374,9 +273,9 @@ int main(int argc, char **argv) {
     const char *menv = getenv("GO_MAXPLY");
     if (senv && *senv)
         g_sims = atoi(senv);
-    const char *ienv = getenv("GO_ANALYZE_INTERVAL");
-    if (ienv && *ienv)
-        g_analyze_interval = atoi(ienv);
+    const char *aenv = getenv("GO_ANALYZE_SIMS");
+    if (aenv && *aenv)
+        g_analyze_sims = atoi(aenv);
     int maxply = menv && *menv ? atoi(menv) : MAX_PLY;
 
     go_init();
@@ -497,16 +396,20 @@ int main(int argc, char **argv) {
         case 10:
             do_genmove(args, id);
             break;
-        case 11:                       /* kata-analyze */
-            do_analyze(id, args, 1, 0);
+        case 11: {                     /* analyze <color> <interval> */
+            float own[GO_MAX_POINTS], score;
+            if (puct_game_over(g)) {
+                respond(id, "%s", "info");
+                break;
+            }
+            if (puct_nn_raw(puct_state(g), NULL, NULL, own, &score) != 0) {
+                respond_err(id, "no evaluator");
+                break;
+            }
+            do_analyze(id, args, score);
             break;
-        case 12:                       /* analyze (Sabaki dialect) */
-            do_analyze(id, args, 0, 0);
-            break;
-        case 13:                       /* genmove_analyze */
-            do_analyze(id, args, 0, 1);
-            break;
-        case 14:
+        }
+        case 12:
             do_showownership(id);
             break;
         default:
