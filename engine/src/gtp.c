@@ -15,6 +15,7 @@
  * when the search's best move is pass.
  */
 #define _POSIX_C_SOURCE 200809L
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,7 +38,7 @@ static const char *GTP_COMMANDS[] = {
 
 static PuctGame *g;
 static int g_sims = 400;
-static int g_analyze_sims = 400;      /* one analyze report's budget */
+static int g_analyze_interval = 10;   /* analyze report, centiseconds */
 
 static void respond(const char *id, const char *fmt, const char *payload) {
     if (id && *id)
@@ -161,6 +162,20 @@ static void do_genmove(char *args, const char *id) {
     respond(id, "%s", v);
 }
 
+static double mono_s(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+}
+
+/* Sabaki stops an analysis by sending any command (it uses
+ * protocol_version); the response must close as soon as anything is
+ * waiting, or the controller desyncs. */
+static int stdin_ready(void) {
+    struct pollfd p = { .fd = 0, .events = POLLIN };
+    return poll(&p, 1, 0) > 0 && (p.revents & (POLLIN | POLLHUP | POLLERR));
+}
+
 /* Top-N root children by visits, as index order in `ord`. */
 static int rank_children(const uint32_t *vis, int nc, int *ord, int top) {
     int m = 0;
@@ -197,13 +212,12 @@ static int root_view(uint16_t *mvs, uint32_t *vis, double *q, float *pr,
     return top;
 }
 
-/* analyze <color> <interval> — one report in Sabaki's format
- * (docs/guides/engine-analysis-integration.md): a single line of
- * space-separated `info` groups, winrate as a float in [0,1], scoreLead in
- * points for the side to move. The interval is accepted and ignored: we
- * answer once per command, so Sabaki gets a fresh report whenever it asks
- * (on every position change). */
-static void do_analyze(const char *id, char *args, float score) {
+/* One report line, Sabaki's `analyze` dialect
+ * (docs/guides/engine-analysis-integration.md): space-separated `info`
+ * groups on ONE line, `pv` last, and — because the command name does not
+ * start with "kata" — winrate/prior as integers in ten-thousandths
+ * (Sabaki's normalizeWinrate divides those by 100). */
+static void emit_analyze(double score) {
     const State *s = puct_state(g);
     int b = s->b;
     uint16_t mvs[MAX_MOVES];
@@ -212,26 +226,57 @@ static void do_analyze(const char *id, char *args, float score) {
     float pr[MAX_MOVES];
     int ord[MAX_MOVES];
     double wr;
-    (void)args;                                  /* color, interval */
-    if (puct_game_over(g))
-        return respond(id, "%s", "info");
-    puct_think(g, g_analyze_sims);
     int top = root_view(mvs, vis, q, pr, ord, &wr);
-
-    respond_start(id);
     printf("info");
     for (int k = 0; k < top; k++) {
         int i = ord[k];
         char v[6];
         move_to_gtp(mvs[i], b, v);
-        printf(" move %s visits %u winrate %.6f prior %.6f order %d "
-               "scoreLead %.6f pv %s", v, vis[i], 0.5 + 0.5 * q[i],
-               (double)pr[i], k, score, v);
+        printf(" move %s visits %u winrate %d prior %d order %d "
+               "scoreLead %.2f pv %s", v, vis[i],
+               (int)((0.5 + 0.5 * q[i]) * 10000.0 + 0.5),
+               (int)((double)pr[i] * 10000.0 + 0.5), k, score, v);
         if (k + 1 < top)
             printf(" info");
     }
     printf("\n");
-    respond_end();
+    fflush(stdout);
+}
+
+/* analyze <color> <interval> — "=" on its own line, then a report line
+ * every `interval` centiseconds while it searches, and the blank-line
+ * terminator only once the GUI sends something (Sabaki withholds it
+ * deliberately). Does not play a move. */
+static void do_analyze(const char *id, char *args, float score) {
+    int interval = g_analyze_interval;
+    for (char *t = strtok(args, " \t\n"); t; t = strtok(NULL, " \t\n")) {
+        if (strcmp(t, "interval") == 0) {
+            char *v = strtok(NULL, " \t\n");
+            if (v)
+                interval = atoi(v);
+        } else if (*t >= '0' && *t <= '9') {
+            interval = atoi(t);
+        }                                   /* else: the color */
+    }
+    if (interval < 1)
+        interval = 1;
+
+    puct_think(g, 64);                      /* so the first frame has
+                                             * real candidates */
+    printf("=%.*s\n", id && *id ? (int)(strlen(id) + 1) : 0,
+           id && *id ? id : "");            /* "=" or "=<id> ", alone */
+    emit_analyze(score);
+    double next = mono_s() + interval / 100.0;
+    while (!stdin_ready()) {
+        puct_think(g, 64);
+        double t = mono_s();
+        if (t >= next) {
+            emit_analyze(score);
+            next = t + interval / 100.0;
+        }
+    }
+    printf("\n");                           /* close the response */
+    fflush(stdout);
 }
 
 /* showownership — the ownership head as a map plus the numbers, in the
@@ -273,9 +318,9 @@ int main(int argc, char **argv) {
     const char *menv = getenv("GO_MAXPLY");
     if (senv && *senv)
         g_sims = atoi(senv);
-    const char *aenv = getenv("GO_ANALYZE_SIMS");
-    if (aenv && *aenv)
-        g_analyze_sims = atoi(aenv);
+    const char *ienv = getenv("GO_ANALYZE_INTERVAL");
+    if (ienv && *ienv)
+        g_analyze_interval = atoi(ienv);
     int maxply = menv && *menv ? atoi(menv) : MAX_PLY;
 
     go_init();

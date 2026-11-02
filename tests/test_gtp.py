@@ -36,6 +36,32 @@ class Gtp:
         assert body.startswith("=") == expect_ok, body
         return body[1:].strip()
 
+    def stream(self, line, lines, abort="protocol_version"):
+        """Analysis streams: `=` alone, `info ...` lines, blank terminator
+        only after the abort command (which Sabaki itself uses)."""
+        self.p.stdin.write(line + "\n")
+        self.p.stdin.flush()
+        head = self.p.stdout.readline()
+        assert head.rstrip() == "=", repr(head)
+        out = []
+        for _ in range(lines):
+            l = self.p.stdout.readline()
+            if l == "":
+                raise AssertionError("engine died: " + "".join(out))
+            out.append(l)
+        self.p.stdin.write(abort + "\n")
+        self.p.stdin.flush()
+        while True:
+            l = self.p.stdout.readline()
+            if l == "":
+                raise AssertionError("engine died in stream")
+            if l == "\n":
+                break
+            out.append(l)
+        assert self.p.stdout.readline().strip().startswith("=2")
+        assert self.p.stdout.readline() == "\n"      # its own terminator
+        return "".join(out)
+
     def close(self):
         self.p.stdin.write("quit\n")
         self.p.stdin.flush()
@@ -95,8 +121,9 @@ def test_analysis_commands_are_advertised():
 
 
 def test_analyze_and_ownership():
-    """`analyze` answers once in Sabaki's format; showownership dumps the
-    net's ownership head as a map plus the numbers."""
+    """`analyze` streams Sabaki's format: '=' alone, then one `info` line
+    per update with an INTEGER winrate in ten-thousandths; the response
+    stays open until the GUI sends something."""
     ck = os.environ.get("GO_TEST_CKPT")
     if not ck or not os.path.exists(ck):
         pytest.skip("set GO_TEST_CKPT to a checkpoint")
@@ -105,20 +132,19 @@ def test_analyze_and_ownership():
         g.cmd("boardsize 9")
         g.cmd("clear_board")
         g.cmd("play b E5")
-        a = g.cmd("analyze b 10")
-        line = a.strip()
-        assert line.startswith("info move"), line
-        for key in ("visits", "winrate", "prior", "order", "pv", "scoreLead"):
-            assert f" {key} " in line, key
-        assert line.count("info move") >= 2          # whole info groups
-        assert "ownership" not in line               # not Sabaki's format
-        wr = float(line.split("winrate")[1].split()[0])
-        assert 0.0 <= wr <= 1.0
+        txt = g.stream("analyze b 1", 3)
+        frames = [l for l in txt.splitlines() if l.strip()]
+        assert len(frames) >= 2, frames            # it streams, not one-shot
+        for line in frames:
+            assert line.startswith("info move"), line
+            assert "pv" in line
+            wr = int(line.split("winrate")[1].split()[0])
+            assert 0 <= wr <= 10000, wr            # ten-thousandths
         # ownership dump: 9 map rows, a legend, then the numbers
         rows = [l for l in g.cmd("showownership").splitlines() if l.strip()]
         assert len(rows) == 2 * 9 + 1, rows
         assert all(len(r.strip()) == 9 for r in rows[:9])
-        assert g.cmd("name") == "gogo"               # still in sync
+        assert g.cmd("name") == "gogo"             # in sync after the abort
     finally:
         g.close()
 
