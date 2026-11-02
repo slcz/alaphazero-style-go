@@ -11,8 +11,9 @@
 #               (the forward is ~0.8 ms/row and it dominates), so:
 #               400 -> 0.5 s, 2000 -> 2.3 s, 5000 -> 6 s, 10000 -> 12 s
 #   GO_MAXPLY   ply wall that triggers TT adjudication (default 400)
-#   GO_ANALYZE_INTERVAL  analyze report interval, centiseconds
-#                    (default 10 = 100 ms; Sabaki re-reads each line)
+#   GO_ANALYZE_INTERVAL  minimum gap between analyze reports, centiseconds
+#                    (Sabaki asks for its own board.analysis_interval = 50,
+#                    i.e. 0.5 s; set this to throttle it)
 #   GO_DEVICE   mps | cpu | dummy    (default mps)
 #   PUCT_WALKERS concurrent evals (default 4)
 #
@@ -22,8 +23,14 @@ set -e
 cd "${0%/*}/.."        # no dirname: Sabaki may spawn us with an empty PATH
 export PUCT_CKPT="${PUCT_CKPT:-$PWD/ckpts/it006.pt}"
 export GO_SIMS="${GO_SIMS:-2000}"
-if [[ "${1:-}" =~ ^[0-9]+$ ]]; then      # Sabaki "Arguments": e.g. 1000
+# Sabaki "Arguments": a leading number is the sims budget, a second one is
+# the minimum analyze interval in centiseconds, e.g. `2000 150`.
+if [[ "${1:-}" =~ ^[0-9]+$ ]]; then
     export GO_SIMS="$1"
+    shift
+fi
+if [[ "${1:-}" =~ ^[0-9]+$ ]]; then
+    export GO_ANALYZE_INTERVAL="$1"
 fi
 export GO_MAXPLY="${GO_MAXPLY:-400}"
 export PUCT_WALKERS="${PUCT_WALKERS:-4}"

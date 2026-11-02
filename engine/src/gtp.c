@@ -38,7 +38,8 @@ static const char *GTP_COMMANDS[] = {
 
 static PuctGame *g;
 static int g_sims = 400;
-static int g_analyze_interval = 10;   /* analyze report, centiseconds */
+static int g_analyze_interval = 10;   /* default report interval, cs    */
+static int g_analyze_min = 0;         /* floor: never report faster, cs */
 
 static void respond(const char *id, const char *fmt, const char *payload) {
     if (id && *id)
@@ -260,6 +261,9 @@ static void do_analyze(const char *id, char *args, float score) {
     }
     if (interval < 1)
         interval = 1;
+    if (interval < g_analyze_min)       /* the GUI asks for 50 cs (0.5 s);
+                                         * this caps how often we answer */
+        interval = g_analyze_min;
 
     puct_think(g, 64);                      /* so the first frame has
                                              * real candidates */
@@ -320,7 +324,7 @@ int main(int argc, char **argv) {
         g_sims = atoi(senv);
     const char *ienv = getenv("GO_ANALYZE_INTERVAL");
     if (ienv && *ienv)
-        g_analyze_interval = atoi(ienv);
+        g_analyze_min = atoi(ienv);
     int maxply = menv && *menv ? atoi(menv) : MAX_PLY;
 
     go_init();
