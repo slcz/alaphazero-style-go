@@ -8,6 +8,13 @@ box (the salad RTX 5090 node). The node holds HF_TOKEN in
     # on the node (tmux survives ssh disconnects):
     bash /workspace/go/scripts/node_run9x9_tmux.sh
 
+`node_restore_fresh.sh` is the fresh-round restore: newest
+`9x9/itNNN-train.pt` from HF becomes `best.pt`, `loop.jsonl` comes back from
+HF (pushed with every iteration), and no shards or caches are fetched. With
+`--buffer-keep 0` the manifest then holds only the round just generated, so
+each round trains on fresh on-policy data only. Set `--buffer-keep` back to
+1/3 in `scripts/node_loop9.sh` to resume the decaying buffer.
+
 It runs FOREVER: `node_loop9.sh` supervises it and restarts after a crash
 (killing orphaned stage children first), the loop resumes at the next
 unrecorded iteration from `loop.jsonl`, and `push.ok` keeps it from
@@ -32,7 +39,7 @@ pack to the model repo, the shard to the dataset repo.
 | training plies | ONLY slow-cap plies (`ply.sims == n_sims`) | `selfplay_data.ply_trainable` |
 | optimizer | Muon lr 0.01 + companion AdamW 2e-4 | `train_round.py` defaults |
 | batch / epochs | 3072 / 1 | `--batch --epochs` |
-| replay buffer | keep 1/3 of the old games per iteration (1, ⅓, 1/9 …) | `--buffer-keep` |
+| replay buffer | **off** for the fresh round (`kept = 0`: new games only) | `--buffer-keep` |
 | FP8 inference | static waves, one graph per board size | `NN_B=<b> NN_COMPILE=1 NN_BF16=1` |
 | gate | 400 games (2×200, colors swapped), 200 sims, argmax after 10 sampled plies, resign OFF, 200-ply cap, rows 800 | `selfplay_loop.gate()` |
 | promote policy | EVAL-ONLY: latest checkpoint always becomes next base (no accept/reject) | `selfplay_loop.py` |

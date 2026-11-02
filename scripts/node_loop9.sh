@@ -5,6 +5,8 @@
 # loop.jsonl, so a crash only costs the stage that was in flight: this
 # restarts the loop, which resumes at the next unrecorded iteration and
 # skips any iteration already backed up to HF (push.ok).
+# --buffer-keep 0: train on the new round only (no history replay).
+# Set it to 1/3 to bring back the decaying buffer.
 cd /workspace/go || exit 1
 export PUCT_WALKERS=4 PUCT_TASKS=8 NN_B=9 NN_BF16=1 NN_COMPILE=1
 export NN_WAVE_STATS=1          # wave fill telemetry -> loop.out
@@ -27,6 +29,7 @@ while true; do
         --pool 2048 --rows 4096 \
         --sample-plys 10 --max-plys 250 \
         --epochs 1 --batch 3072 --lr 0.01 \
+        --buffer-keep 0 \
         --gate-games 400 --gate-sims 200 \
         --device cuda --seed 1 \
         >> "$WORK/loop.out" 2>&1

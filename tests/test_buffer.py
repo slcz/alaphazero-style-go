@@ -54,6 +54,17 @@ def test_buffer_decay(tmp_path, monkeypatch):
     assert set(nxt["rounds"][0]["games"]) <= set(rec["rounds"][0]["games"])
 
 
+def test_buffer_keep_zero_drops_all_history(tmp_path, monkeypatch):
+    """--buffer-keep 0 = the fresh round only (no replay buffer)."""
+    loop = _module("selfplay_loop")
+    monkeypatch.setattr(loop, "push_buffer", lambda *a, **k: None)
+    for r in (1, 2, 3):
+        _fake_round(tmp_path, r, 1000)
+    rec = loop.update_buffer(tmp_path, 3, 0.0, 1)
+    assert [r["round"] for r in rec["rounds"]] == [3]
+    assert len(rec["rounds"][0]["games"]) == 1000        # newest, in full
+
+
 def test_buffer_drops_expired_rounds(tmp_path, monkeypatch):
     loop = _module("selfplay_loop")
     monkeypatch.setattr(loop, "push_buffer", lambda *a, **k: None)

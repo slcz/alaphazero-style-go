@@ -138,6 +138,9 @@ def main() -> int:
     if args.rename:
         up(ckpt, f"9x9/{args.rename}.pt", model_repo, "model")
         up(sp, f"9x9/{args.rename}-summary.json", model_repo, "model")
+    lj = root / "loop.jsonl"
+    if lj.exists():
+        up(lj, "9x9/loop.jsonl", model_repo, "model")
     shard = itd / "selfplay" / "shard-0.spbin"
     if shard.exists():
         up(shard, f"9x9/it{it:03d}/shard-0.spbin", data_repo, "dataset")
