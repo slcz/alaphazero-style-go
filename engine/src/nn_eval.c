@@ -127,7 +127,7 @@ static PyObject *raw_fn(void) {
 }
 
 int puct_nn_raw(const State *s, float *policy, float *wdl, float *own,
-                float *score) {
+                float stats[3]) {
     int b = s->b, n = b * b;
     if (!nn_ready)
         return -1;
@@ -164,9 +164,9 @@ int puct_nn_raw(const State *s, float *policy, float *wdl, float *own,
         if (own)
             memcpy(own, PyBytes_AsString(PyTuple_GET_ITEM(r, 2)),
                    (size_t)n * sizeof(float));
-        if (score)
-            memcpy(score, PyBytes_AsString(PyTuple_GET_ITEM(r, 3)),
-                   sizeof(float));
+        if (stats)
+            memcpy(stats, PyBytes_AsString(PyTuple_GET_ITEM(r, 3)),
+                   3 * sizeof(float));
         rc = 0;
     } else if (!r) {
         PyErr_Print();

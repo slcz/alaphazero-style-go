@@ -33,7 +33,7 @@ static const char *GTP_COMMANDS[] = {
     "play", "genmove",
     /* analysis: Sabaki probes analyze / kata-analyze / lz-analyze
      * (engines.analyze_commands) and renders `analyze`'s per-move list */
-    "analyze", "showownership",
+    "analyze", "showstate",
 };
 
 static PuctGame *g;
@@ -193,14 +193,6 @@ static int rank_children(const uint32_t *vis, int nc, int *ord, int top) {
     return m;
 }
 
-/* KataGo order: row-major from the TOP-LEFT (our row 0 is GTP row 1, the
- * bottom). `tab` is indexed y*b+x; prints b*b values, whitespace-free
- * formatting left to the caller. */
-static int ownership_order(int b, int idx) {
-    int ky = idx / b, x = idx % b;
-    return (b - 1 - ky) * b + x;
-}
-
 /* Top child indices by visits, plus the root's winrate. */
 static int root_view(uint16_t *mvs, uint32_t *vis, double *q, float *pr,
                      int *ord, double *wr) {
@@ -280,32 +272,48 @@ static void do_analyze(const char *id, char *args, float score) {
     fflush(stdout);
 }
 
-/* showownership — the ownership head as a map plus the numbers, in the
- * board order. X = current player, O = the opponent, '.' = unsettled. */
-static void do_showownership(const char *id) {
+/* showstate — a text report of the two heads that are otherwise only
+ * visible to the search: the score head's most likely result (and its
+ * probability) and the ownership map, one grid cell per point,
+ * X = black, O = white, '.' = undecided (|value| < 0.2). */
+static void do_showstate(const char *id) {
     const State *s = puct_state(g);
     int b = s->b;
-    float own[GO_MAX_POINTS];
-    if (puct_nn_raw(s, NULL, NULL, own, NULL) != 0)
+    float own[GO_MAX_POINTS], st[3];
+    if (puct_nn_raw(s, NULL, NULL, own, st) != 0)
         return respond_err(id, "no evaluator");
+
+    int black_to_move = s->side == BLACK;
+    /* the heads are mover-view; report the score from black's side and the
+     * map from the board's */
+    float score_black = black_to_move ? st[1] : -st[1];
+    float mean_black = black_to_move ? st[0] : -st[0];
+
     respond_start(id);
     printf("\n");
+    printf("score  %+.1f  (p %.1f%%)   mean %+.1f   komi %.1f\n",
+           score_black, 100.0 * st[2], mean_black,
+           (double)puct_state(g)->komi);
+    printf("side to move: %s   (black view, points = black - white)\n",
+           black_to_move ? "black" : "white");
+    printf("     ");            /* no blank line: that ends a GTP response */
+    for (int x = 0; x < b; x++)
+        printf(" %c", 'A' + x + (x >= 8));       /* GTP columns skip I */
+    printf("\n");
     for (int ky = 0; ky < b; ky++) {
+        int y = b - 1 - ky;                     /* top row first */
+        printf("  %2d ", y + 1);
         for (int x = 0; x < b; x++) {
-            float v = own[ownership_order(b, ky * b + x)];
-            putchar(v > 0.75f ? 'X' : v < 0.25f ? 'O' : '.');
+            float p = own[y * b + x];           /* P(side to move owns) */
+            if (!black_to_move)
+                p = 1.0f - p;
+            float v = 2.0f * p - 1.0f;          /* [-1,1], +black */
+            putchar(' ');
+            putchar(v > 0.2f ? 'X' : v < -0.2f ? 'O' : '.');
         }
         printf("\n");
     }
-    printf("X = %s, O = %s; value = P(%s owns the point)\n",
-           s->side == BLACK ? "black" : "white",
-           s->side == BLACK ? "white" : "black",
-           s->side == BLACK ? "black" : "white");
-    for (int ky = 0; ky < b; ky++) {
-        for (int x = 0; x < b; x++)
-            printf(" %.2f", own[ownership_order(b, ky * b + x)]);
-        printf("\n");
-    }
+    printf("     X = black, O = white, . = undecided (|v| < 0.2)\n");
     respond_end();
 }
 
@@ -440,20 +448,20 @@ int main(int argc, char **argv) {
             do_genmove(args, id);
             break;
         case 11: {                     /* analyze <color> <interval> */
-            float own[GO_MAX_POINTS], score;
+            float own[GO_MAX_POINTS], st[3];
             if (puct_game_over(g)) {
                 respond(id, "%s", "info");
                 break;
             }
-            if (puct_nn_raw(puct_state(g), NULL, NULL, own, &score) != 0) {
+            if (puct_nn_raw(puct_state(g), NULL, NULL, own, st) != 0) {
                 respond_err(id, "no evaluator");
                 break;
             }
-            do_analyze(id, args, score);
+            do_analyze(id, args, st[0]);
             break;
         }
         case 12:
-            do_showownership(id);
+            do_showstate(id);
             break;
         default:
             respond_err(id, "unknown command");

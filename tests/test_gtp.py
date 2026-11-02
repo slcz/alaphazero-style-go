@@ -112,7 +112,7 @@ def test_analysis_commands_are_advertised():
     show the winrate bar / ownership heatmap."""
     g = Gtp()
     try:
-        for c in ("analyze", "showownership"):
+        for c in ("analyze", "showstate"):
             assert g.cmd(f"known_command {c}") == "true", c
         for c in ("kata-analyze", "genmove_analyze", "lz-analyze"):
             assert g.cmd(f"known_command {c}") == "false", c
@@ -123,7 +123,8 @@ def test_analysis_commands_are_advertised():
 def test_analyze_and_ownership():
     """`analyze` streams Sabaki's format: '=' alone, then one `info` line
     per update with an INTEGER winrate in ten-thousandths; the response
-    stays open until the GUI sends something."""
+    stays open until the GUI sends something. `showstate` is our own
+    text report of the score head and the ownership map."""
     ck = os.environ.get("GO_TEST_CKPT")
     if not ck or not os.path.exists(ck):
         pytest.skip("set GO_TEST_CKPT to a checkpoint")
@@ -140,10 +141,16 @@ def test_analyze_and_ownership():
             assert "pv" in line
             wr = int(line.split("winrate")[1].split()[0])
             assert 0 <= wr <= 10000, wr            # ten-thousandths
-        # ownership dump: 9 map rows, a legend, then the numbers
-        rows = [l for l in g.cmd("showownership").splitlines() if l.strip()]
-        assert len(rows) == 2 * 9 + 1, rows
-        assert all(len(r.strip()) == 9 for r in rows[:9])
+        # state dump: score line, then a 9x9 map with aligned columns
+        txt = g.cmd("showstate")
+        assert "score" in txt and "side to move:" in txt
+        grid = [l for l in txt.splitlines() if l.strip()[:1].isdigit()]
+        assert len(grid) == 9, grid
+        for i, row in enumerate(grid):
+            assert row.strip().split()[0] == str(9 - i)
+            cells = row.strip().split()[1:]
+            assert len(cells) == 9 and set(cells) <= {".", "X", "O"}, row
+        assert "X = black" in txt
         assert g.cmd("name") == "gogo"             # in sync after the abort
     finally:
         g.close()
