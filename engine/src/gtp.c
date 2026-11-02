@@ -67,6 +67,19 @@ static int cmd_index(const char *cmd) {
     return -1;
 }
 
+/* GTP colors are the one-letter forms ("b"/"w"); the long spellings are
+ * tolerated. A token is only ever a color if it is not a vertex, and the
+ * move parse runs first, so "B4" stays a move. */
+static int parse_color(const char *tok) {
+    if (!tok || !*tok)
+        return -1;
+    switch (tok[0]) {
+    case 'b': case 'B': return BLACK;
+    case 'w': case 'W': return WHITE;
+    }
+    return -1;
+}
+
 /* play <move> | play <color> <move> — the move must be legal; a color
  * token must match the side to move. */
 static void do_play(char *args, const char *id) {
@@ -78,8 +91,7 @@ static void do_play(char *args, const char *id) {
     Move mv;
     if (go_parse_gtp(puct_state(g), tok, &mv) != 0) {
         /* maybe a color token first */
-        int color = strcmp(tok, "black") == 0 ? BLACK
-                  : strcmp(tok, "white") == 0 ? WHITE : -1;
+        int color = parse_color(tok);
         if (color < 0) {
             respond_err(id, "illegal move");
             return;
@@ -108,8 +120,7 @@ static void do_play(char *args, const char *id) {
 static void do_genmove(char *args, const char *id) {
     char *tok = args ? strtok(args, " \t\n") : NULL;
     if (tok) {
-        int color = strcmp(tok, "black") == 0 ? BLACK
-                  : strcmp(tok, "white") == 0 ? WHITE : -1;
+        int color = parse_color(tok);
         if (color < 0) {
             respond_err(id, "bad color");
             return;

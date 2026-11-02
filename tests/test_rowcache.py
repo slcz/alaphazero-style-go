@@ -78,6 +78,8 @@ def test_symmetry_matches_reference(game_i):
 
 def test_cache_round_trip(tmp_path):
     """load_or_build caches to disk and reloads identical rows."""
+    if not SHARD or not os.path.exists(SHARD):
+        pytest.skip("set GO_TEST_SHARD to a selfplay shard")
     g, _s, end = next(iter(scan_shard(SHARD)))
     unit = tmp_path / "selfplay"
     unit.mkdir()

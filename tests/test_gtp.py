@@ -74,6 +74,22 @@ def test_play_genmove_game():
         g.close()
 
 
+def test_short_color_forms():
+    """GTP colors are "b"/"w" — Sabaki sends those, not "black"/"white"."""
+    g = Gtp()
+    try:
+        g.cmd("boardsize 7")
+        g.cmd("play b D4")
+        g.cmd("play w E3")
+        assert g.cmd("genmove b")             # short, upper/lower both
+        assert g.cmd("genmove W")
+        g.cmd("genmove w", expect_ok=False)   # out of turn is still an error
+        # a vertex starting with a color letter must stay a vertex
+        g.cmd("play B6")
+    finally:
+        g.close()
+
+
 def test_genmove_color_mismatch():
     g = Gtp()
     try:
