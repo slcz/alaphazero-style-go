@@ -1,18 +1,45 @@
 #!/bin/bash
-# node_restore_fresh.sh — fresh-round restore: the newest checkpoint from
-# HF becomes best.pt, no shards, no replay buffer. The loop resumes at the
-# next iteration and, with --buffer-keep 0, trains on the new round only.
+# node_restore_fresh.sh — fresh-round restore: the newest checkpoint becomes
+# best.pt, no shards, no replay buffer. The loop resumes at the next
+# iteration and, with --buffer-keep 0, trains on the new round only.
 #
-#   bash scripts/node_restore_fresh.sh     # on the node, after the repo
-#                                          # is shipped + engine built
+#   bash scripts/node_restore_fresh.sh                    # pull from HF
+#   bash scripts/node_restore_fresh.sh --ckpt FILE --iterations N
+#                                                        # offline (HF blocked)
 set -e
 cd /workspace/go
 set -a; source .env; set +a
-: "${HF_TOKEN:?HF_TOKEN missing}"
 W=/workspace/go-run-9x9
 mkdir -p "$W"
 
-python3 - <<'PY'
+CKPT=""
+ITERS=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --ckpt) CKPT="$2"; shift 2 ;;
+        --iterations) ITERS="$2"; shift 2 ;;
+        *) echo "usage: $0 [--ckpt FILE --iterations N]" >&2; exit 2 ;;
+    esac
+done
+
+if [ -n "$CKPT" ]; then
+    # offline: iterations <= N are assumed done (their artifacts live on HF)
+    : "${ITERS:?--iterations is required with --ckpt}"
+    cp "$CKPT" "$W/best.pt"
+    python3 - "$ITERS" <<'PY'
+import json, sys
+n = int(sys.argv[1])
+with open("/workspace/go-run-9x9/loop.jsonl", "w") as fh:
+    for i in range(1, n + 1):
+        fh.write(json.dumps({"iteration": i,
+                             "note": "restored stub: offline, stage state "
+                                     "unknown"}) + "\n")
+print(f"loop.jsonl <- stubs 1..{n}")
+print(f"loop resumes at it{n + 1:03d}")
+PY
+else
+    : "${HF_TOKEN:?HF_TOKEN missing}"
+    python3 - <<'PY'
 import json, os, re, shutil
 from huggingface_hub import HfApi, hf_hub_download
 
@@ -42,12 +69,13 @@ else:
             fh.write(json.dumps({"iteration": i,
                                  "note": "restored stub: stage state unknown"})
                      + "\n")
-    print(f"loop.jsonl <- stubs 1..{n} (no copy on HF)")
     have = n
+    print(f"loop.jsonl <- stubs 1..{n} (no copy on HF)")
 print(f"loop resumes at it{max(n, have) + 1:03d}")
 PY
+fi
 
 echo "== work dir =="
 ls -la "$W"
 sha256sum "$W/best.pt"
-echo "launch with: bash scripts/node_run9x9_tmux.sh   (--buffer-keep 0 = fresh round)"
+echo "launch: bash scripts/node_run9x9_tmux.sh   (--buffer-keep 0 = fresh round)"

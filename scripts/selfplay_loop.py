@@ -74,9 +74,18 @@ def _hf_token() -> str | None:
     return None
 
 
+def hf_enabled() -> bool:
+    """Nodes that cannot reach HF (this one resolves it but times out) set
+    HF_PUSH=0; the Mac pulls the artifacts and pushes instead."""
+    return os.environ.get("HF_PUSH", "1") != "0"
+
+
 def push_buffer(path: Path, it: int = 0) -> None:
     """The manifest is the one thing a node loss cannot rebuild cheaply
     (the shards come back from HF) — push it as soon as it changes."""
+    if not hf_enabled():
+        log("  buffer push skipped (HF_PUSH=0; pull from the Mac)")
+        return
     try:
         from huggingface_hub import HfApi
         tok = _hf_token()
@@ -149,6 +158,9 @@ def push_iter(work: Path, it: int, rename: str | None = None) -> int:
     summary json, gate SGFs to the model repo; the shard to the dataset
     repo). Nothing comes back to the Mac. `push.ok` memoizes it so a
     restart does not re-upload."""
+    if not hf_enabled():
+        log(f"it{it}: HF push skipped (HF_PUSH=0; pull from the Mac)")
+        return 0
     mark = work / f"it{it:03d}" / "push.ok"
     if mark.exists() and (rename is None
                           or f"rename={rename}" in mark.read_text()):

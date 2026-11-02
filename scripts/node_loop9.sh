@@ -5,6 +5,10 @@
 # loop.jsonl, so a crash only costs the stage that was in flight: this
 # restarts the loop, which resumes at the next unrecorded iteration and
 # skips any iteration already backed up to HF (push.ok).
+# HF_PUSH=0: this box cannot reach huggingface.co (resolves, times out),
+# so the loop skips the upload and the Mac pulls the artifacts instead
+# (scripts/hf_push_from_node.py). Set to 1 on a box with HF access.
+export HF_PUSH=0
 # --buffer-keep 0: train on the new round only (no history replay).
 # Set it to 1/3 to bring back the decaying buffer.
 cd /workspace/go || exit 1
