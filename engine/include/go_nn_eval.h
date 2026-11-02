@@ -18,6 +18,12 @@ extern "C" {
  * 0 = ok, -1 = failure. */
 int puct_attach_nn(const char *ckpt, const char *device, int rows);
 
+/* One raw evaluation of `s` (no search, no tree): policy probabilities
+ * over the b*b+1 slots, wdl [pW, pL], and the mover-view ownership —
+ * P(point ends up mine) in [0,1], board order (y*b+x). Any output may be
+ * NULL. 0 = ok, -1 = no evaluator. */
+int puct_nn_raw(const State *s, float *policy, float *wdl, float *own);
+
 #ifdef __cplusplus
 }
 #endif

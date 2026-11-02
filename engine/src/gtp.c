@@ -30,10 +30,15 @@ static const char *GTP_COMMANDS[] = {
     "protocol_version", "name", "version", "known_command",
     "list_commands", "quit", "boardsize", "clear_board", "komi",
     "play", "genmove",
+    /* analysis: Sabaki probes analyze / kata-analyze / lz-analyze
+     * (engines.analyze_commands) and draws the winrate bar plus the
+     * ownership heatmap from the trailing `ownership` array */
+    "kata-analyze", "analyze", "showownership",
 };
 
 static PuctGame *g;
 static int g_sims = 400;
+static int g_analyze_sims = 400;
 
 static void respond(const char *id, const char *fmt, const char *payload) {
     if (id && *id)
@@ -41,6 +46,21 @@ static void respond(const char *id, const char *fmt, const char *payload) {
     else
         printf("=%s\n\n", payload ? payload : "");
     (void)fmt;
+    fflush(stdout);
+}
+
+/* payload written between these must be newline-terminated */
+static void respond_start(const char *id) {
+    printf("=%s", id && *id ? id : "");
+    putchar(' ');
+    fflush(stdout);
+}
+
+/* the payload already ends with a newline, so one more closes the GTP
+ * response (an extra one would leave a stale blank line in the pipe and
+ * desync every later read) */
+static void respond_end(void) {
+    printf("\n");
     fflush(stdout);
 }
 
@@ -142,6 +162,107 @@ static void do_genmove(char *args, const char *id) {
     respond(id, "%s", v);
 }
 
+/* Top-N root children by visits, as index order in `ord`. */
+static int rank_children(const uint32_t *vis, int nc, int *ord, int top) {
+    int m = 0;
+    for (int i = 0; i < nc; i++) {
+        int j = m;
+        while (j > 0 && vis[ord[j - 1]] < vis[i]) {
+            ord[j] = ord[j - 1];
+            j--;
+        }
+        ord[j] = i;
+        if (m < top)
+            m++;
+    }
+    return m;
+}
+
+/* KataGo order: row-major from the TOP-LEFT (our row 0 is GTP row 1, the
+ * bottom). `tab` is indexed y*b+x; prints b*b values, whitespace-free
+ * formatting left to the caller. */
+static int ownership_order(int b, int idx) {
+    int ky = idx / b, x = idx % b;
+    return (b - 1 - ky) * b + x;
+}
+
+/* kata-analyze / analyze [player] [interval] — one search burst, then a
+ * Sabaki-shaped report: one `info` line per top move, `rootInfo`, and the
+ * `ownership` array from the net's ownership head (current-player view,
+ * [-1,1]). Does not play a move. */
+static void do_analyze(const char *id) {
+    const State *s = puct_state(g);
+    int b = s->b, n = b * b;
+
+    if (puct_game_over(g)) {
+        respond(id, "%s", "info");
+        return;
+    }
+    puct_think(g, g_analyze_sims);
+
+    uint16_t mvs[MAX_MOVES];
+    uint32_t vis[MAX_MOVES];
+    double q[MAX_MOVES];
+    float pr[MAX_MOVES];
+    int nc = puct_root_children(g, mvs, vis, q, pr);
+    int ord[MAX_MOVES];
+    int top = rank_children(vis, nc, ord, 8);
+
+    uint32_t rv;
+    double wsum;
+    puct_root_stats(g, &rv, &wsum);
+    double wr = rv ? 0.5 - 0.5 * (wsum / rv) : 0.5;
+
+    float own[GO_MAX_POINTS];
+    if (puct_nn_raw(s, NULL, NULL, own) != 0)
+        return respond_err(id, "no evaluator");
+
+    respond_start(id);
+    for (int k = 0; k < top; k++) {
+        int i = ord[k];
+        char v[6];
+        move_to_gtp(mvs[i], b, v);
+        printf("info move %s visits %u winrate %.6f prior %.6f order %d "
+               "pv %s\n", v, vis[i], 0.5 + 0.5 * q[i], (double)pr[i], k, v);
+    }
+    printf("rootInfo visits %u winrate %.6f\n", rv, wr);
+    printf("ownership");
+    for (int i = 0; i < n; i++)
+        printf(" %.3f", 2.0 * own[ownership_order(b, i)] - 1.0);
+    printf("\n");
+    respond_end();
+}
+
+/* showownership — the ownership head as a map plus the numbers, in the
+ * same order as the kata-analyze array. X = current player, O = the
+ * opponent, '.' = unsettled. */
+static void do_showownership(const char *id) {
+    const State *s = puct_state(g);
+    int b = s->b;
+    float own[GO_MAX_POINTS];
+    if (puct_nn_raw(s, NULL, NULL, own) != 0)
+        return respond_err(id, "no evaluator");
+    respond_start(id);
+    printf("\n");
+    for (int ky = 0; ky < b; ky++) {
+        for (int x = 0; x < b; x++) {
+            float v = own[ownership_order(b, ky * b + x)];
+            putchar(v > 0.75f ? 'X' : v < 0.25f ? 'O' : '.');
+        }
+        printf("\n");
+    }
+    printf("X = %s, O = %s; value = P(%s owns the point)\n",
+           s->side == BLACK ? "black" : "white",
+           s->side == BLACK ? "white" : "black",
+           s->side == BLACK ? "black" : "white");
+    for (int ky = 0; ky < b; ky++) {
+        for (int x = 0; x < b; x++)
+            printf(" %.2f", own[ownership_order(b, ky * b + x)]);
+        printf("\n");
+    }
+    respond_end();
+}
+
 int main(int argc, char **argv) {
     const char *device = argc > 1 ? argv[1] : "mps";
     int rows = argc > 2 ? atoi(argv[2]) : 0;
@@ -152,6 +273,9 @@ int main(int argc, char **argv) {
     const char *menv = getenv("GO_MAXPLY");
     if (senv && *senv)
         g_sims = atoi(senv);
+    const char *aenv = getenv("GO_ANALYZE_SIMS");
+    if (aenv && *aenv)
+        g_analyze_sims = atoi(aenv);
     int maxply = menv && *menv ? atoi(menv) : MAX_PLY;
 
     go_init();
@@ -271,6 +395,13 @@ int main(int argc, char **argv) {
             break;
         case 10:
             do_genmove(args, id);
+            break;
+        case 11:
+        case 12:
+            do_analyze(id);
+            break;
+        case 13:
+            do_showownership(id);
             break;
         default:
             respond_err(id, "unknown command");

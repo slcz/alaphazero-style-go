@@ -11,6 +11,7 @@
 #               (the forward is ~0.8 ms/row and it dominates), so:
 #               400 -> 0.5 s, 2000 -> 2.3 s, 5000 -> 6 s, 10000 -> 12 s
 #   GO_MAXPLY   ply wall that triggers TT adjudication (default 400)
+#   GO_ANALYZE_SIMS  sims per kata-analyze call (default 400)
 #   GO_DEVICE   mps | cpu | dummy    (default mps)
 #   PUCT_WALKERS concurrent evals (default 4)
 #

@@ -124,6 +124,32 @@ def setup(ckpt: str, device: str, rows: int, banks: int = 1) -> dict:
     return out
 
 
+def raw(planes: bytes, mask: bytes, b: int) -> tuple:
+    """One position, no search → (policy, wdl, ownership) as raw bytes.
+
+    Policy is over the b*b+1 slots, wdl is [pW, pL], ownership is the
+    mover-view P(each point ends up mine) in [0,1]. Off the search hot
+    path (GTP analysis), so it allocates instead of using the banks."""
+    import numpy as np
+    T = b * b
+    x = np.frombuffer(planes, dtype=np.float32).reshape(NN_TOKENS,
+                                                        NN_TOKEN_DIM)
+    m = np.frombuffer(mask, dtype=np.uint8).astype(bool)
+    n = int(_S.get("rows_cap", 1)) if _S.get("static") else 1
+    xd = torch.from_numpy(np.repeat(x[None, :T], n, 0)).to(_S["device"])
+    md = torch.from_numpy(np.repeat(m[None, :T + 1], n, 0)).to(_S["device"])
+    with torch.inference_mode():
+        if _S["cuda"] and _S.get("bf16", True):
+            with torch.autocast("cuda", dtype=_S["adtype"]):
+                out = _S["model"](xd, md)
+        else:
+            out = _S["model"](xd, md)
+        pol = out["policy_logp"][0, :T + 1].float().exp().cpu().numpy()
+        wdl = torch.softmax(out["wdl"][0].float(), -1).cpu().numpy()
+        own = torch.sigmoid(out["own"][0].float()).cpu().numpy()
+    return pol.tobytes(), wdl.tobytes(), own.tobytes()
+
+
 def _active_b(bank: int, n: int) -> int:
     """Board size of the staged rows: every row's legal set includes the
     pass slot (b²), so the last active mask column is exactly b²."""

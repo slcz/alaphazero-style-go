@@ -6,10 +6,18 @@
 
 #include <Python.h>
 #include <stdlib.h>
+#include <string.h>
+
+#include "go_nn.h"
+#include "go_puct.h"
 
 typedef struct {
     PyObject *worker;
 } NnCtx;
+
+/* Python is only up once puct_attach_nn ran; the dummy device never gets
+ * there, so every entry point must check this before touching Py_*. */
+static int nn_ready = 0;
 
 static void nn_eval(void *ctx, PuctEvalOp op, int bank, int n,
                     const float *planes, const uint8_t *masks, float *logp,
@@ -94,5 +102,72 @@ int puct_attach_nn(const char *ckpt, const char *device, int rows) {
     puct_set_eval(nn_eval, c);
     Py_DECREF(res);
     PyGILState_Release(st);
+    nn_ready = 1;
     return 0;
+}
+
+/* ---- raw one-position evaluation (GTP analysis) ------------------------- */
+
+static PyObject *raw_fn(void) {
+    static PyObject *fn;
+    if (fn)
+        return fn;
+    if (!nn_ready)
+        return NULL;
+    PyObject *mod = PyImport_ImportModule("go_ai.net.nn_worker");
+    if (!mod) {
+        PyErr_Print();
+        return NULL;
+    }
+    fn = PyObject_GetAttrString(mod, "raw");
+    Py_DECREF(mod);
+    if (!fn)
+        PyErr_Print();
+    return fn;
+}
+
+int puct_nn_raw(const State *s, float *policy, float *wdl, float *own) {
+    int b = s->b, n = b * b;
+    if (!nn_ready)
+        return -1;
+    float planes[NN_TOTAL];
+    uint8_t mask[PUCT_POLICY_SIZE];
+    MoveList ml;
+
+    nn_encode(s, planes);
+    gen_legal(s, &ml);
+    memset(mask, 0, sizeof mask);
+    for (int i = 0; i < ml.count; i++)
+        mask[go_policy_slot(s, ml.moves[i])] = 1;
+
+    PyGILState_STATE st = PyGILState_Ensure();
+    PyObject *fn = raw_fn();
+    if (!fn) {
+        PyGILState_Release(st);
+        return -1;
+    }
+    PyObject *r = fn ? PyObject_CallFunction(fn, "y#y#i",
+                                             (char *)planes,
+                                             (Py_ssize_t)sizeof planes,
+                                             (char *)mask,
+                                             (Py_ssize_t)sizeof mask, b)
+                     : NULL;
+    int rc = -1;
+    if (r && PyTuple_Check(r) && PyTuple_GET_SIZE(r) == 3) {
+        if (policy)
+            memcpy(policy, PyBytes_AsString(PyTuple_GET_ITEM(r, 0)),
+                   (size_t)(n + 1) * sizeof(float));
+        if (wdl)
+            memcpy(wdl, PyBytes_AsString(PyTuple_GET_ITEM(r, 1)),
+                   2 * sizeof(float));
+        if (own)
+            memcpy(own, PyBytes_AsString(PyTuple_GET_ITEM(r, 2)),
+                   (size_t)n * sizeof(float));
+        rc = 0;
+    } else if (!r) {
+        PyErr_Print();
+    }
+    Py_XDECREF(r);
+    PyGILState_Release(st);
+    return rc;
 }
