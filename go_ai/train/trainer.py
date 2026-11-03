@@ -40,11 +40,14 @@ class TrainConfig:
     policy_weight: float = 1.0
     aux_reply_weight: float = 0.15    # KataGo wopp
     own_weight: float = 1.5           # KataGo wo (mean-over-points form)
-    score_weight: float = 0.01        # Huber on the margin; at init the
-                                      # term is ~39 points, so 0.01 puts it
-                                      # level with the value CE (measured:
-                                      # 0.386 vs 0.387) and it decays
-                                      # naturally as the head converges
+    score_weight: float = 0.016       # Huber on the margin, set from the
+                                      # CONVERGED scale, not the init one:
+                                      # it006's trained score head scores
+                                      # 24.1 points of Huber against a value
+                                      # CE of 0.387, so 0.016 keeps the term
+                                      # level with value once trained (it
+                                      # starts 1.6x heavier, which is when
+                                      # the gradient is worth most)
     grad_clip: Optional[float] = 1.0
     weight_decay: float = 0.0
     bf16: bool = True              # CUDA autocast (no-op off CUDA)
