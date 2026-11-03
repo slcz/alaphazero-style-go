@@ -40,7 +40,11 @@ class TrainConfig:
     policy_weight: float = 1.0
     aux_reply_weight: float = 0.15    # KataGo wopp
     own_weight: float = 1.5           # KataGo wo (mean-over-points form)
-    score_weight: float = 0.05        # Huber on the predicted margin
+    score_weight: float = 0.01        # Huber on the margin; at init the
+                                      # term is ~39 points, so 0.01 puts it
+                                      # level with the value CE (measured:
+                                      # 0.386 vs 0.387) and it decays
+                                      # naturally as the head converges
     grad_clip: Optional[float] = 1.0
     weight_decay: float = 0.0
     bf16: bool = True              # CUDA autocast (no-op off CUDA)
