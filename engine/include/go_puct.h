@@ -89,7 +89,7 @@ typedef enum {
  * forward at PUSH and treat PULL/WAIT as no-ops. */
 typedef void (*PuctEvalFn)(void *ctx, PuctEvalOp op, int bank, int n,
                            const float *planes, const uint8_t *masks,
-                           float *logp, float *wdl);
+                           float *logp, float *wdl, float *score);
 
 /* block_bytes = 0 selects PUCT_DEFAULT_BLOCK. The game starts at the
  * empty b x b board with komi and the ply wall maxply. Call go_init()
@@ -97,6 +97,12 @@ typedef void (*PuctEvalFn)(void *ctx, PuctEvalOp op, int bank, int n,
 PuctGame *puct_game_new(size_t block_bytes, int b, float komi, int maxply);
 void      puct_game_free(PuctGame *g);
 void      puct_set_eval(PuctEvalFn fn, void *ctx);   /* the one evaluator */
+
+/* Search utility = lambda * win/loss + (1 - lambda) * tanh(margin/(2b)),
+ * both terms in the mover's view and in [-1,1]. GO_UTIL_LAMBDA overrides;
+ * lambda = 1 recovers pure AlphaZero value. */
+void   puct_set_utility_lambda(double l);
+double puct_utility_lambda(void);
 
 /* Suspend: puct_think / puct_mux_step treat the game as idle (returning
  * done) until resumed — for games waiting on something outside the
@@ -122,7 +128,7 @@ int       puct_game_reconfig(PuctGame *g, int b, float komi, int maxply);
 void puct_zone_init(int max_rows);   /* rows PER BANK; ONE-TIME process
                                         setup — asserts if the zone exists */
 void puct_zone_set_buffers(int bank, float *planes, uint8_t *mask,
-                           float *logp, float *wdl);  /* nn_eval.c seam:
+                           float *logp, float *wdl, float *score);  /* nn_eval.c seam:
                                              point the bank at caller-owned
                                              pinned tensors (e.g. sized
                                              rows = zone cap) */

@@ -92,13 +92,20 @@ writes `<work>/buffer.json`:
 
 ## Stage 2 — training (`scripts/train_round.py`)
 
+- Search utility (engine): `lambda * win/loss + (1-lambda) * tanh(margin/2b)`
+  with `GO_UTIL_LAMBDA=0.5` — the search values a point of result and a
+  point of margin equally, so the net learns to count the board and to
+  stop when the game is over. `1.0` recovers plain AlphaZero value.
 - Rows: every slow-cap ply of every buffered game (≈25% of plies;
   ~1.0-1.3M rows per 30K games, ~2.5M over the full buffer).
 - 8× D4 symmetry augmentation sampled on the fly; steps = rows×8×epochs/batch.
-- Losses (KataGo-style): policy CE + value one-hot (win/loss, no jigo —
-  komi always fractional) + opponent-reply aux (0.15) + ownership (1.5)
-  + score pdf (0.02) + score cdf (0.02). Muon on 2D matrices ≥64,
-  AdamW on the rest; grad clip 1.0; bf16 autocast; torch.compile.
+- Losses: policy CE + value one-hot (win/loss, no jigo — komi always
+  fractional) + opponent-reply aux (0.15) + ownership (1.5) + score
+  Huber (0.016, one real number in points). The score weight is set from
+  the CONVERGED scale: a trained head scores ~24 points of Huber against
+  a value CE of ~0.39 (measured), so the term lands level with value once
+  trained and 1.6x heavier while the head is learning. Muon on 2D
+  matrices ≥64, Adam on the rest; grad clip 1.0; bf16; torch.compile.
 - Warm start: `--base-ckpt best.pt` (previous iteration's net + optimizer
   state). `train.ck.pt` written every 500 steps (`--save-every`).
 - Off-policy note: an old round's π̄ comes from an older net. At

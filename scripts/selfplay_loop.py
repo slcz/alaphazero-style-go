@@ -254,14 +254,6 @@ def train(args, work: Path, base: Path, out: Path) -> int:
     return pump(cmd, out.parent / "train.log")
 
 
-def kata_label(unit: Path, log_path: Path) -> int:
-    """Fill score/ownership for games selfplay paused (GO_PAUSE_V)."""
-    if os.environ.get("GO_PAUSE_V", "0") in ("", "0"):
-        return 0
-    cmd = [sys.executable, "scripts/kata_label.py",
-           str(unit / "shard-0.spbin")]
-    return pump(cmd, log_path)
-
 
 def gate(args, candidate: Path, best: Path, eval_json: Path) -> float | None:
     log_path = eval_json.with_suffix(".log")
@@ -386,10 +378,6 @@ def main() -> int:
                     f"{time.time() - t0:.0f}s")
             else:
                 log(f"it{it}: reusing existing shard ({games} games)")
-            rc = kata_label(unit, d / "kata_label.log")
-            if rc != 0:
-                log(f"it{it}: kata labelling FAILED ({rc}) — paused games "
-                    f"keep placeholder labels")
             buf = update_buffer(work, it, args.buffer_keep, args.seed)
             n_buf = sum(len(x["games"]) for x in buf["rounds"])
             log(f"it{it}: training on {n_buf} buffered games "

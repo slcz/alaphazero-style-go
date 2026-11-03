@@ -53,7 +53,7 @@ static int   z_rows;       /* rows per bank */
 
 /* One row's storage: planes + logp + 2 value floats, then mask bytes. */
 #define ZONE_ROW_BYTES \
-    (((size_t)NN_TOTAL + PUCT_POLICY_SIZE + 2) * sizeof(float) \
+    (((size_t)NN_TOTAL + PUCT_POLICY_SIZE + 3) * sizeof(float) \
      + PUCT_POLICY_SIZE)
 
 /* The landing zone — exactly one per system, two banks (double buffer):
@@ -66,6 +66,7 @@ static struct {
         uint8_t *mask;     /* cap × PUCT_POLICY_SIZE */
         float   *logp;     /* cap × PUCT_POLICY_SIZE */
         float   *wdl;      /* cap × 2 */
+        float   *score;    /* cap × 1: predicted margin, mover view */
         int      used;     /* rows staged; frozen once the bank leaves FREE */
         int      state;    /* BANK_FREE .. BANK_READY, guarded by Z.mu */
         bool     flush;    /* pull this bank now, not after the peer's push
@@ -324,10 +325,40 @@ static void set_terminal(PuctNode *n, const State *st) {
                         ? PUCT_OUTC_WIN : PUCT_OUTC_LOSS;
 }
 
-/* Terminal backup value, mover's view. */
-static float terminal_value(const PuctNode *n) {
-    return (n->flags & PUCT_OUTC_WIN) ? 1.0f :
-           (n->flags & PUCT_OUTC_LOSS) ? -1.0f : 0.0f;
+/* Static score term: the TT margin squeezed into [-1,1] by a tanh scaled
+ * with the board width, so "two points" means the same thing to the search
+ * on 7x7 and on 19x19. */
+static double score_term(double margin, int b) {
+    return tanh(margin / (2.0 * (double)b));
+}
+
+/* Search utility = lambda * win/loss + (1 - lambda) * score, both in the
+ * mover's view and both in [-1,1]. With lambda = 0.5 the search trades a
+ * point of expected result against a point of margin; at lambda = 1 it is
+ * plain AlphaZero value. */
+static double g_util_lambda = 0.5;
+
+void puct_set_utility_lambda(double l) {
+    g_util_lambda = l < 0.0 ? 0.0 : l > 1.0 ? 1.0 : l;
+}
+
+double puct_utility_lambda(void) {
+    return g_util_lambda;
+}
+
+static float blend(float wdl, double margin, int b) {
+    return (float)(g_util_lambda * (double)wdl
+                   + (1.0 - g_util_lambda) * score_term(margin, b));
+}
+
+/* Terminal backup value, mover's view: the exact TT margin, blended. */
+static float terminal_value(const PuctNode *n, const State *st) {
+    float wdl = (n->flags & PUCT_OUTC_WIN) ? 1.0f :
+                (n->flags & PUCT_OUTC_LOSS) ? -1.0f : 0.0f;
+    float score = 0.0f;
+    state_termination(st, &score, NULL);
+    double margin = (st->side == BLACK) ? score : -score;
+    return blend(wdl, margin, st->b);
 }
 
 static double prior_of_q(uint16_t q) {   /* prior_q decode */
@@ -343,10 +374,11 @@ static void walker_deliver(PuctGame *g, PuctWalker *w);
  * logp + balanced value. */
 static void dummy_eval(void *ctx, PuctEvalOp op, int bank, int n,
                        const float *planes, const uint8_t *masks,
-                       float *logp, float *wdl) {
+                       float *logp, float *wdl, float *score) {
     (void)ctx; (void)bank; (void)planes; (void)masks;
     if (op != PUCT_EVAL_PUSH)
         return;
+    memset(score, 0, (size_t)n * sizeof(float));
     for (int r = 0; r < n; r++) {
         memset(logp + (size_t)r * PUCT_POLICY_SIZE, 0,
                PUCT_POLICY_SIZE * sizeof(float));
@@ -365,14 +397,19 @@ void puct_zone_init(int max_rows) {
     float *planes = z_mem;
     float *logp = planes + (size_t)PUCT_BANKS * rows * NN_TOTAL;
     float *wdl = logp + (size_t)PUCT_BANKS * rows * PUCT_POLICY_SIZE;
-    uint8_t *mask = (uint8_t *)(wdl + (size_t)PUCT_BANKS * rows * 2);
+    float *score = wdl + (size_t)PUCT_BANKS * rows * 2;
+    uint8_t *mask = (uint8_t *)(score + (size_t)PUCT_BANKS * rows);
     for (int b = 0; b < PUCT_BANKS; b++)
         puct_zone_set_buffers(b,
                               planes + (size_t)b * rows * NN_TOTAL,
                               mask + (size_t)b * rows * PUCT_POLICY_SIZE,
                               logp + (size_t)b * rows * PUCT_POLICY_SIZE,
-                              wdl + (size_t)b * rows * 2);
+                              wdl + (size_t)b * rows * 2,
+                              score + (size_t)b * rows);
     z_rows = max_rows;
+    const char *lenv = getenv("GO_UTIL_LAMBDA");
+    if (lenv && *lenv)
+        puct_set_utility_lambda(atof(lenv));
     if (!Z.eval)
         Z.eval = dummy_eval;
     pthread_mutex_init(&Z.mu, NULL);
@@ -382,12 +419,13 @@ void puct_zone_init(int max_rows) {
 }
 
 void puct_zone_set_buffers(int bank, float *planes, uint8_t *mask,
-                           float *logp, float *wdl) {
+                           float *logp, float *wdl, float *score) {
     assert(bank >= 0 && bank < PUCT_BANKS);
     Z.banks[bank].planes = planes;
     Z.banks[bank].mask = mask;
     Z.banks[bank].logp = logp;
     Z.banks[bank].wdl = wdl;
+    Z.banks[bank].score = score;
 }
 
 void puct_set_eval(PuctEvalFn fn, void *ctx) {
@@ -410,7 +448,7 @@ static bool io_pending(void) {
 static void bank_eval(PuctEvalOp op, int b, int n) {
     assert(Z.eval);
     Z.eval(Z.eval_ctx, op, b, n, Z.banks[b].planes, Z.banks[b].mask,
-           Z.banks[b].logp, Z.banks[b].wdl);
+           Z.banks[b].logp, Z.banks[b].wdl, Z.banks[b].score);
 }
 
 /* Advance every drivable bank one phase (push → pull → publish); mutex
@@ -721,7 +759,7 @@ static bool walker_step(PuctGame *g, PuctWalker *w) {
         state_termination(&w->st, NULL, NULL) != TERM_PLAYING) {
         if (!(n->flags & PUCT_TERMINAL))
             set_terminal(n, &w->st);
-        backup(g, w->idx, terminal_value(n));
+        backup(g, w->idx, terminal_value(n, &w->st));
         g->parks++;
         g->terminal_hits++;
         g->sims_done++;
@@ -776,7 +814,8 @@ static void walker_deliver(PuctGame *g, PuctWalker *w) {
                     Z.banks[b].logp + (size_t)off * PUCT_POLICY_SIZE, &w->st);
     if (w->idx != g->root) {
         const float *wd = Z.banks[b].wdl + (size_t)off * 2;
-        backup(g, w->idx, wd[0] - wd[1]);
+        backup(g, w->idx,
+               blend(wd[0] - wd[1], (double)Z.banks[b].score[off], g->b));
         g->sims_done++;
     }
     w->row = -1;

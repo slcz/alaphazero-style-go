@@ -71,13 +71,6 @@ typedef struct Slot {
 
 static Slot   *slots;
 static int     max_plys;
-/* Early stop for the KataGo labelling path (scripts/kata_label.py): a game
- * is cut once the result is certain and its score/ownership labels then
- * come from KataGo. OFF by default — a paused record carries placeholder
- * labels (score 0, ownership 0.5), so it is only usable with that pass.
- * GO_PAUSE_V overrides (e.g. 0.95). */
-static double pause_v = 0.0;
-static uint32_t n_paused;
 
 static void *xmalloc(size_t n) {
     void *p = malloc(n);
@@ -182,9 +175,6 @@ int main(int argc, char **argv) {
     }
 
     go_init();
-    const char *pvenv = getenv("GO_PAUSE_V");
-    if (pvenv && *pvenv)
-        pause_v = atof(pvenv);
     rng_seed(seed);
     PuctGame **handles = xmalloc((size_t)pool * sizeof *handles);
     if (puct_mux_new(pool, (size_t)block_mb << 20, b, komi, max_plys,
@@ -297,15 +287,6 @@ int main(int argc, char **argv) {
                 /* TT-scored: double pass or the ply wall. */
                 end_kind = puct_state(g)->n_pass >= 2
                              ? SP_END_NATURAL : SP_END_ADJUDICATED;
-            } else if (pause_v > 0.0 && fabs(outlook) >= pause_v) {
-                /* Decided. Stop here: the rest of the game is played badly
-                 * and would only supply bad ownership/score labels, so
-                 * scripts/kata_label.py fills them from this position. */
-                end_kind = SP_END_PAUSED;
-                n_paused++;
-                score = 0.0f;
-                for (int i = 0; i < (int)GO_MAX_POINTS; i++)
-                    s->ownership[i] = 0.5f;     /* neutral until labelled */
             } else {
                 continue;
             }
@@ -339,8 +320,7 @@ int main(int argc, char **argv) {
             }
             printf("GAME idx=%u plies=%d end=%s score=%+.1f\n",
                    s->game_index, s->ply,
-                   end_kind == SP_END_NATURAL ? "natural"
-                 : end_kind == SP_END_PAUSED ? "paused" : "cap", score);
+                   end_kind == SP_END_NATURAL ? "natural" : "cap", score);
             fflush(stdout);
             finished++;
             s->live = 0;

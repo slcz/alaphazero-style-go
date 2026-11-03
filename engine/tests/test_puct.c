@@ -38,18 +38,24 @@ static bool near_d(double a, double b, double eps) {
     return fabs(a - b) < eps;
 }
 
+/* The utility the search must produce: lambda*wdl + (1-lambda)*score. */
+static double blend_at(double lam, double wdl, double margin, int b) {
+    return lam * wdl + (1.0 - lam) * tanh(margin / (2.0 * (double)b));
+}
+
 /* ---- scripted evaluators ---------------------------------------------- */
 
 typedef struct { int calls; } CountCtx;
 
 static void eval_count(void *ctx, PuctEvalOp op, int bank, int n,
                        const float *planes, const uint8_t *masks,
-                       float *logp, float *wdl) {
+                       float *logp, float *wdl, float *score) {
     (void)bank; (void)planes; (void)masks;
     if (op != PUCT_EVAL_PUSH)
         return;                     /* PULL/WAIT are no-ops for sync evals */
     CountCtx *c = ctx;
     c->calls += n;
+    memset(score, 0, (size_t)n * sizeof(float));
     for (int r = 0; r < n; r++) {
         memset(logp + (size_t)r * PUCT_POLICY_SIZE, 0,
                PUCT_POLICY_SIZE * sizeof(float));
@@ -60,10 +66,11 @@ static void eval_count(void *ctx, PuctEvalOp op, int bank, int n,
 
 static void eval_mover_wins(void *ctx, PuctEvalOp op, int bank, int n,
                             const float *planes, const uint8_t *masks,
-                            float *logp, float *wdl) {
+                            float *logp, float *wdl, float *score) {
     (void)ctx; (void)bank; (void)planes; (void)masks;
     if (op != PUCT_EVAL_PUSH)
         return;
+    memset(score, 0, (size_t)n * sizeof(float));
     for (int r = 0; r < n; r++) {
         memset(logp + (size_t)r * PUCT_POLICY_SIZE, 0,
                PUCT_POLICY_SIZE * sizeof(float));
@@ -74,7 +81,7 @@ static void eval_mover_wins(void *ctx, PuctEvalOp op, int bank, int n,
 
 static void eval_pattern(void *ctx, PuctEvalOp op, int bank, int n,
                          const float *planes, const uint8_t *masks,
-                         float *logp, float *wdl) {
+                         float *logp, float *wdl, float *score) {
     (void)ctx; (void)bank; (void)planes; (void)masks;
     if (op != PUCT_EVAL_PUSH)
         return;
@@ -167,7 +174,9 @@ static void test_value_sign(void) {
         if (visits[i] > 0) {
             hot++;
             CHECK(visits[i] == 1);
-            CHECK(near_d(q[i], -1.0, 1e-9));
+            /* eval_count returns score 0, so the score term contributes
+             * nothing and lambda 0.5 halves the win/loss part */
+            CHECK(near_d(q[i], blend_at(0.5, -1.0, 0.0, 7), 1e-9));
         }
     }
     CHECK(hot == 1);
@@ -175,7 +184,47 @@ static void test_value_sign(void) {
     double root_w;
     puct_root_stats(g, &root_visits, &root_w);
     CHECK(root_visits == 1);
-    CHECK(near_d(root_w, 1.0, 1e-9));
+    CHECK(near_d(root_w, blend_at(0.5, 1.0, 0.0, 7), 1e-9));
+    puct_game_free(g);
+}
+
+/* ---- 3b. utility blend: lambda trades win/loss against margin ------------ */
+
+static void test_utility_lambda_blend(void) {
+    /* an asymmetric leaf evaluator: the leaf's mover is scored +1 (loses),
+     * so at lambda = 1 the root child is -1; the score term lifts it. */
+    PuctGame *g = puct_game_new(0, 7, 9.5f, 400);
+    CHECK(g != NULL);
+    CHECK(near_d(puct_utility_lambda(), 0.5, 1e-12));   /* the default */
+    puct_set_walkers(g, 1);
+    puct_set_eval(eval_mover_wins, NULL);
+    puct_think(g, 1);
+
+    uint16_t moves[MAX_MOVES];
+    uint32_t visits[MAX_MOVES];
+    double q[MAX_MOVES];
+    int n = puct_root_children(g, moves, visits, q, NULL);
+    int hot = -1;
+    for (int i = 0; i < n; i++)
+        if (visits[i] > 0)
+            hot = i;
+    CHECK(hot >= 0);
+
+    puct_set_utility_lambda(1.0);       /* pure AlphaZero value */
+    puct_game_reset(g);
+    puct_think(g, 1);
+    n = puct_root_children(g, moves, visits, q, NULL);
+    double pure = 0.0;
+    for (int i = 0; i < n; i++)
+        if (visits[i] > 0)
+            pure = q[i];
+    CHECK(near_d(pure, -1.0, 1e-9));
+
+    puct_set_utility_lambda(0.5);       /* the shipped default again */
+    CHECK(near_d(puct_utility_lambda(), 0.5, 1e-12));
+    puct_set_utility_lambda(2.0);       /* clamped */
+    CHECK(near_d(puct_utility_lambda(), 1.0, 1e-12));
+    puct_set_utility_lambda(0.5);
     puct_game_free(g);
 }
 
@@ -204,10 +253,11 @@ static void test_wall_terminal(void) {
             visited++;
         if (moves[i] == MOVE_PASS) {
             CHECK(visits[i] >= 1);
-            CHECK(near_d(q[i], -1.0, 1e-9));   /* pass loses by komi */
+            /* pass loses by komi: wdl -1, margin -9.5 */
+            CHECK(near_d(q[i], blend_at(0.5, -1.0, -9.5, 7), 1e-6));
         } else {
-            if (visits[i] > 0)
-                CHECK(near_d(q[i], 1.0, 1e-9));    /* point owns the board */
+            if (visits[i] > 0)                 /* point owns the board */
+                CHECK(near_d(q[i], blend_at(0.5, 1.0, 39.5, 7), 1e-6));
         }
     }
     CHECK(visited > 40);
@@ -670,6 +720,7 @@ int main(int argc, char **argv) {
     test_policy_slot();
     test_bookkeeping();
     test_value_sign();
+    test_utility_lambda_blend();
     test_wall_terminal();
     test_determinism();
     test_prior_pattern();
