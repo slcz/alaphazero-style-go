@@ -684,21 +684,6 @@ static double rng_gamma(uint64_t *st, double alpha) {
     }
 }
 
-/* Root exploration temperature: flattens the ROOT descent distribution
- * only, so the search looks wider at the top of the tree while the moves
- * actually played (argmax of pi-bar) and the recorded target stay sharp.
- * 1.0 = off. Deliberately NOT read from the environment here: only the
- * selfplay driver opts in, so the gate and GTP can never inherit it. */
-static double g_root_temp = 1.0;
-
-void puct_set_root_temp(double t) {
-    g_root_temp = t < 1.0 ? 1.0 : t;
-}
-
-double puct_root_temp(void) {
-    return g_root_temp;
-}
-
 /* Dirichlet noise mixed into the ROOT priors: Symmetric alphaZero-style
  * exploration. eps = 0 disables. Selfplay-only, like the root
  * temperature. */
@@ -726,8 +711,7 @@ static uint32_t select_child(PuctGame *g, const PuctNode *n) {
     double w[MAX_MOVES];
     for (int i = 0; i < m; i++)
         w[i] = (double)pi[i];
-    double temp = (n == node_at_c(g, g->root)) ? g_root_temp : 1.0;
-    return (uint32_t)sample_index_stream(&g->rng, w, m, temp);
+    return (uint32_t)sample_index_stream(&g->rng, w, m, 1.0);
 }
 
 /* Fill the parked leaf's real priors: softmax over the row's logp at

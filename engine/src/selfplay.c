@@ -175,12 +175,6 @@ int main(int argc, char **argv) {
     }
 
     go_init();
-    /* root exploration temperature: SELFPLAY ONLY. The gate and GTP never
-     * call this, so they stay at the deterministic 1.0 whatever the
-     * environment says — their search must not be flattened. */
-    const char *tenv = getenv("GO_ROOT_TEMP");
-    if (tenv && *tenv)
-        puct_set_root_temp(atof(tenv));
     /* root Dirichlet noise: also selfplay-only, same reasoning */
     const char *nenv = getenv("GO_ROOT_NOISE_EPS");
     if (nenv && *nenv) {

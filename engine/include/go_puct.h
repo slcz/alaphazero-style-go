@@ -104,11 +104,6 @@ void      puct_set_eval(PuctEvalFn fn, void *ctx);   /* the one evaluator */
 void   puct_set_utility_lambda(double l);
 double puct_utility_lambda(void);
 
-/* Flatten the ROOT descent sampling to pi-bar^(1/t) (t >= 1; 1 = off).
- * Exploration without touching the moves played or the recorded target.
- * GO_ROOT_TEMP overrides. */
-void   puct_set_root_temp(double t);
-double puct_root_temp(void);
 
 /* Dirichlet noise mixed into the ROOT priors once per root:
  * p <- (1-eps) p + eps Dir(alpha). eps = 0 disables. Selfplay-only. */
