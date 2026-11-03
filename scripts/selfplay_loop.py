@@ -412,7 +412,12 @@ def main() -> int:
                               "gate_games")},
                           # the search blend is environment, not an argv
                           "util_lambda":
-                              float(os.environ.get("GO_UTIL_LAMBDA", 0.5))}}
+                              float(os.environ.get("GO_UTIL_LAMBDA", 0.5)),
+                          "root_noise":
+                              float(os.environ.get("GO_ROOT_NOISE_EPS", 0.0)),
+                          "root_noise_alpha":
+                              float(os.environ.get("GO_ROOT_NOISE_ALPHA",
+                                                   0.3))}}
         # durability first: the checkpoint/summary/SGFs/shard leave the
         # node (gen0 aliases it001's net), THEN the iteration is recorded —
         # a crash in between re-runs the push-free path on restart
