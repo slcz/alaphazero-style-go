@@ -410,9 +410,6 @@ void puct_zone_init(int max_rows) {
     const char *lenv = getenv("GO_UTIL_LAMBDA");
     if (lenv && *lenv)
         puct_set_utility_lambda(atof(lenv));
-    const char *tenv = getenv("GO_ROOT_TEMP");
-    if (tenv && *tenv)
-        puct_set_root_temp(atof(tenv));
     if (!Z.eval)
         Z.eval = dummy_eval;
     pthread_mutex_init(&Z.mu, NULL);
@@ -655,7 +652,8 @@ static int node_pi_bar(const PuctGame *g, const PuctNode *r,
 /* Root exploration temperature: flattens the ROOT descent distribution
  * only, so the search looks wider at the top of the tree while the moves
  * actually played (argmax of pi-bar) and the recorded target stay sharp.
- * 1.0 = off. GO_ROOT_TEMP overrides. */
+ * 1.0 = off. Deliberately NOT read from the environment here: only the
+ * selfplay driver opts in, so the gate and GTP can never inherit it. */
 static double g_root_temp = 1.0;
 
 void puct_set_root_temp(double t) {

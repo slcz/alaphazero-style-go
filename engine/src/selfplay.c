@@ -175,6 +175,12 @@ int main(int argc, char **argv) {
     }
 
     go_init();
+    /* root exploration temperature: SELFPLAY ONLY. The gate and GTP never
+     * call this, so they stay at the deterministic 1.0 whatever the
+     * environment says — their search must not be flattened. */
+    const char *tenv = getenv("GO_ROOT_TEMP");
+    if (tenv && *tenv)
+        puct_set_root_temp(atof(tenv));
     rng_seed(seed);
     PuctGame **handles = xmalloc((size_t)pool * sizeof *handles);
     if (puct_mux_new(pool, (size_t)block_mb << 20, b, komi, max_plys,
