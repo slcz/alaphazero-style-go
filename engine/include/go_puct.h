@@ -74,9 +74,8 @@ typedef struct PuctGame PuctGame;
 
 /* planes: bank-relative rows, n x NN_TOTAL. masks/logp: n x
  * PUCT_POLICY_SIZE (1 = legal); only the first b*b+1 slots of a row are
- * active. wdl: n x 2 out (mover's view, softmax [pW, pL]). score: n x 1
- * out, the score head's mean margin in the mover's view. bank = the
- * batch's landing-zone bank. */
+ * active. wdl: n x 2 out (mover's view, softmax [pW, pL]; the search
+ * backs up w[0]-w[1]). bank = the batch's landing-zone bank. */
 typedef enum {
     PUCT_EVAL_PUSH,   /* H2D + launch compute; async — must not block on
                          the GPU (the io thread keeps serving the other
@@ -90,7 +89,7 @@ typedef enum {
  * forward at PUSH and treat PULL/WAIT as no-ops. */
 typedef void (*PuctEvalFn)(void *ctx, PuctEvalOp op, int bank, int n,
                            const float *planes, const uint8_t *masks,
-                           float *logp, float *wdl, float *score);
+                           float *logp, float *wdl);
 
 /* block_bytes = 0 selects PUCT_DEFAULT_BLOCK. The game starts at the
  * empty b x b board with komi and the ply wall maxply. Call go_init()
@@ -123,35 +122,10 @@ int       puct_game_reconfig(PuctGame *g, int b, float komi, int maxply);
 void puct_zone_init(int max_rows);   /* rows PER BANK; ONE-TIME process
                                         setup — asserts if the zone exists */
 void puct_zone_set_buffers(int bank, float *planes, uint8_t *mask,
-                           float *logp, float *wdl,
-                           float *score);  /* nn_eval.c seam:
+                           float *logp, float *wdl);  /* nn_eval.c seam:
                                              point the bank at caller-owned
                                              pinned tensors (e.g. sized
                                              rows = zone cap) */
-
-/* Weight of the static score term in the search utility: the value
- * backed up is w[0]-w[1] + w * tanh(margin / (2b)), where the margin is
- * the score head's mean at a net leaf and the exact TT score at a
- * terminal. Default 0.10 (KataGo's staticScoreUtilityFactor); 0 restores
- * pure win/loss. Process-global. */
-void   puct_set_score_utility(double w);
-double puct_score_utility(void);
-
-/* What a backed-up value means. MIXED (default) is win/loss plus the
- * weighted static score term; SCORE drops win/loss entirely and uses the
- * margin alone, rescaled to the same range so the RPO temperature and the
- * Q scale keep working. A driver switches a game to SCORE once the result
- * is settled, so the rest is finished for points (clean endgames, clean
- * ownership/score labels). Per game; reset()/reconfig() restore MIXED. */
-enum { PUCT_UTIL_MIXED = 0, PUCT_UTIL_SCORE = 1 };
-void puct_set_utility_mode(PuctGame *g, int mode);
-int  puct_utility_mode(const PuctGame *g);
-
-/* Drop the search tree at the current position (state, walkers and the
- * node block stay). Switching utility mode mid-game requires this: every
- * stored Q is in the old units, so the tree has to be rebuilt or the old
- * values dominate for hundreds of visits. */
-void puct_clear_tree(PuctGame *g);
 
 /* Move → policy slot: the board point, or b*b for pass. */
 int  go_policy_slot(const State *s, Move m);

@@ -65,6 +65,8 @@ def pack_sgfs(itd: Path) -> Path | None:
     """gate-sgf/ -> gate-sgf.tgz (skipped when already packed)."""
     d = itd / "gate-sgf"
     tgz = itd / "gate-sgf.tgz"
+    if tgz.exists():                  # already packed (pulled from the node)
+        return tgz
     if not d.is_dir() or not any(d.iterdir()):
         return None
     if not tgz.exists():
@@ -100,8 +102,8 @@ def main() -> int:
         tj = json.loads(tj.read_text())
         fin = tj.get("final", tj)
         summary["train_final"] = {k: fin.get(k) for k in
-                                  ("policy_acc", "value_acc", "score_pdf",
-                                   "score_cdf", "elapsed_s")}
+                                  ("policy_acc", "value_acc", "score",
+                                   "elapsed_s")}
         summary["train"] = {k: tj.get(k) for k in
                             ("games", "trainable_plies", "steps",
                              "elapsed_s")}

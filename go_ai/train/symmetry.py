@@ -18,7 +18,7 @@ What moves, per sample:
   aux_idx   the reply move transforms (pass → pass)
   aux_mask  the after-position's legal set, transformed
   own       point permutation
-  wdl / score_bin / aux_w   invariant (score is symmetry-free)
+  wdl / score / aux_w       invariant (score is symmetry-free)
 """
 from __future__ import annotations
 
@@ -125,5 +125,5 @@ def transform_sample(smp: Dict[str, np.ndarray], b: int,
         out["own"] = out["own"][inv]
     if int(out["aux_idx"]) != n:
         out["aux_idx"] = np.int64(fwd[int(out["aux_idx"])])
-    # wdl / score_bin / aux_w invariant
+    # wdl / score / aux_w invariant
     return out

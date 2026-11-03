@@ -142,8 +142,7 @@ def main() -> int:
 
     cfg = TrainConfig(lr=args.lr, batch_size=args.batch, device=args.device,
                       seed=args.seed,
-                      own_weight=0.0, score_pdf_weight=0.0,
-                      score_cdf_weight=0.0,
+                      own_weight=0.0, score_weight=0.0,
                       value_weight=0.0 if args.no_value else 1.0,
                       aux_reply_weight=0.0 if args.no_aux else 0.15,
                       grad_clip=1.0, compile=not args.no_compile,

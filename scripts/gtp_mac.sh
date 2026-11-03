@@ -6,15 +6,11 @@
 # Sabaki spawns this itself; there is no port to connect to.
 #
 # knobs (env):
-#   PUCT_CKPT   checkpoint (default ckpts/it006.pt)
+#   PUCT_CKPT   checkpoint (default ckpts/it009.pt)
 #   GO_SIMS     sims per genmove (default 2000). MPS does ~860 sims/s
 #               (the forward is ~0.8 ms/row and it dominates), so:
 #               400 -> 0.5 s, 2000 -> 2.3 s, 5000 -> 6 s, 10000 -> 12 s
 #   GO_MAXPLY   ply wall that triggers TT adjudication (default 400)
-#   GO_SCORE_UTILITY  static score term in the search (default 0.3 here, to
-#               match the training loop from it008; the engine's own default
-#               is 0.10 and 0 = pure win/loss). Set it in the shell to A/B:
-#                GO_SCORE_UTILITY=0 ./scripts/gtp_mac.sh
 #   GO_BLOCK_MB node block in MB (default: auto, ~4 MB per 100 sims at
 #               9x9 scaled by board area; 2000 sims on 9x9 -> ~77 MB)
 #   GO_ANALYZE_SIMS  playouts per analyze session (default = GO_SIMS);
@@ -26,9 +22,8 @@
 # set from Sabaki's "Arguments" field:  gtp_mac.sh 1000
 set -e
 cd "${0%/*}/.."        # no dirname: Sabaki may spawn us with an empty PATH
-export PUCT_CKPT="${PUCT_CKPT:-$PWD/ckpts/it006.pt}"
+export PUCT_CKPT="${PUCT_CKPT:-$PWD/ckpts/it010.pt}"
 export GO_SIMS="${GO_SIMS:-2000}"
-export GO_SCORE_UTILITY="${GO_SCORE_UTILITY:-0.3}"
 # Sabaki "Arguments": a single number overrides GO_SIMS.
 if [[ "${1:-}" =~ ^[0-9]+$ ]]; then
     export GO_SIMS="$1"

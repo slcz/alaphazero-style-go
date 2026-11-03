@@ -8,8 +8,7 @@ import pytest
 import torch
 
 from go_ai.net import features as F
-from go_ai.net.model import (SCORE_BINS, GoNet, NetConfig, count_parameters,
-                             score_to_bin)
+from go_ai.net.model import GoNet, NetConfig, count_parameters
 from go_ai.train.trainer import TrainConfig, Trainer
 
 TINY = NetConfig(d_model=64, n_layers=2, n_heads=4, d_ff=64, rope_pairs=2)
@@ -39,7 +38,7 @@ def test_shapes_and_contract():
         assert out["aux_logp"].shape == (3, T + 1)
         assert out["wdl"].shape == (3, 2)
         assert out["own"].shape == (3, T)
-        assert out["score"].shape == (3, SCORE_BINS)
+        assert out["score"].shape == (3,)
         # the masking contract: illegal slots have probability EXACTLY 0
         lp = out["policy_logp"]
         legal = m[:, :T + 1]
@@ -71,13 +70,15 @@ def test_default_scale():
     assert 5_000_000 < n < 8_000_000, n
 
 
-def test_score_bins():
-    assert score_to_bin(-380.0) == 0
-    assert score_to_bin(0.0) == 380
-    assert score_to_bin(380.0) == 760
-    assert score_to_bin(-9999) == 0          # clamped at the rails
-    assert score_to_bin(9999) == SCORE_BINS - 1
-    assert score_to_bin(7.4) == score_to_bin(7.0)   # 1-point bins round
+def test_score_is_one_real_number():
+    """The score head is a regression, not a 761-way distribution."""
+    m = GoNet(NetConfig()).eval()
+    tok = torch.zeros(2, 81, 18)
+    mask = torch.ones(2, 82, dtype=torch.bool)
+    with torch.inference_mode():
+        out = m(tok, mask)
+    assert out["score"].shape == (2,)
+    assert out["score"].dtype.is_floating_point
 
 
 def test_checkpoint_round_trip(tmp_path):

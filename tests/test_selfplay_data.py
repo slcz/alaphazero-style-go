@@ -5,7 +5,6 @@ import pytest
 
 from go_ai.engine import BLACK
 from go_ai.net import features as F
-from go_ai.net.model import score_to_bin
 from go_ai.selfplay.shard import read_unit
 from go_ai.train.selfplay_data import selfplay_samples, stack_selfplay
 
@@ -37,7 +36,7 @@ def test_samples(sp_dir):
         assert (s["pi_probs"] >= 0).all()
         assert s["wdl"].sum() == 1.0 and s["wdl"].max() == 1.0
         assert set(np.unique(s["own"])) <= {0.0, 0.5, 1.0}
-        assert 0 <= s["score_bin"] < 761
+        assert abs(float(s["score"])) <= 400.0
         assert s["aux_w"] in (0.0, 1.0)
 
     # labels consistent with the recorded game score per mover
@@ -46,8 +45,8 @@ def test_samples(sp_dir):
     mover0 = g.plies[0].mover
     win0 = (mover0 == BLACK) == (g.score > 0)
     assert ss[0]["wdl"][0 if win0 else 1] == 1.0
-    exp_bin = score_to_bin(g.score if mover0 == BLACK else -g.score)
-    assert ss[0]["score_bin"] == exp_bin
+    exp_score = g.score if mover0 == BLACK else -g.score
+    assert abs(float(ss[0]["score"]) - exp_score) < 1e-3
     # aux: the reply actually played (every trainable ply but the last)
     trainable = [i for i, p in enumerate(g.plies) if p.sims == g.n_sims]
     for j, i in enumerate(trainable[:-1]):

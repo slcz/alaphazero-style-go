@@ -71,11 +71,13 @@ typedef struct Slot {
 
 static Slot   *slots;
 static int     max_plys;
-/* Switch a game to score-only utility once win/loss confidence is certain:
- * the value saturates there, so its per-move noise swamps a 2-point gain
- * and the engine would leave dead stones on the board. 0 disables. */
-static double score_only_v = 0.95;
-static uint32_t n_score_only;      /* games that switched mid-game */
+/* Early stop for the KataGo labelling path (scripts/kata_label.py): a game
+ * is cut once the result is certain and its score/ownership labels then
+ * come from KataGo. OFF by default — a paused record carries placeholder
+ * labels (score 0, ownership 0.5), so it is only usable with that pass.
+ * GO_PAUSE_V overrides (e.g. 0.95). */
+static double pause_v = 0.0;
+static uint32_t n_paused;
 
 static void *xmalloc(size_t n) {
     void *p = malloc(n);
@@ -180,6 +182,9 @@ int main(int argc, char **argv) {
     }
 
     go_init();
+    const char *pvenv = getenv("GO_PAUSE_V");
+    if (pvenv && *pvenv)
+        pause_v = atof(pvenv);
     rng_seed(seed);
     PuctGame **handles = xmalloc((size_t)pool * sizeof *handles);
     if (puct_mux_new(pool, (size_t)block_mb << 20, b, komi, max_plys,
@@ -218,7 +223,7 @@ int main(int argc, char **argv) {
     uint32_t finished = 0, next_game = 0;
     double depth_sum = 0;          /* global search-depth aggregate */
     uint32_t depth_thinks = 0, depth_max = 0;
-    double t0 = now_s();
+    double t0 = now_s(), t_report = t0;
     while (finished < (uint32_t)games) {
         /* start (recycle) slots before the step so their first think is
          * this step, not a wasted one at a stale position */
@@ -251,14 +256,6 @@ int main(int argc, char **argv) {
             double wsum;
             puct_root_stats(g, &root_visits, &wsum);
             double outlook = root_visits ? -(wsum / root_visits) : 0.0;
-            /* |utility| >= 0.95 + w means the win/loss part alone is at
-             * least 0.95 (the score term cannot exceed +-w): the result is
-             * settled, so finish the game for points instead. */
-            /* decided? act on it after this ply is recorded and played, so
-             * pi-bar and the stored target still come from this search */
-            int settled = score_only_v > 0.0 &&
-                fabs(outlook) >= score_only_v + puct_score_utility() &&
-                puct_utility_mode(g) != PUCT_UTIL_SCORE;
             {
                 double dmean;
                 uint32_t dmax;
@@ -291,27 +288,27 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "selfplay: puct_play failed\n");
                 return 1;
             }
-            if (settled) {
-                /* Every stored Q is in win/loss units, so the tree goes
-                 * too — a new scale averaged into hundreds of old visits
-                 * would just echo the old ranking. */
-                puct_set_utility_mode(g, PUCT_UTIL_SCORE);
-                puct_clear_tree(g);
-                n_score_only++;
-                printf("SWITCH idx=%u ply=%d outlook=%+.3f -> score-only\n",
-                       s->game_index, s->ply, outlook);
-                fflush(stdout);
-            }
 
-            float score;
-            if (state_termination(puct_state(g), &score, s->ownership)
-                == TERM_PLAYING)
+            float score = 0.0f;
+            int over = state_termination(puct_state(g), &score, s->ownership)
+                       != TERM_PLAYING;
+            uint8_t end_kind;
+            if (over) {
+                /* TT-scored: double pass or the ply wall. */
+                end_kind = puct_state(g)->n_pass >= 2
+                             ? SP_END_NATURAL : SP_END_ADJUDICATED;
+            } else if (pause_v > 0.0 && fabs(outlook) >= pause_v) {
+                /* Decided. Stop here: the rest of the game is played badly
+                 * and would only supply bad ownership/score labels, so
+                 * scripts/kata_label.py fills them from this position. */
+                end_kind = SP_END_PAUSED;
+                n_paused++;
+                score = 0.0f;
+                for (int i = 0; i < (int)GO_MAX_POINTS; i++)
+                    s->ownership[i] = 0.5f;     /* neutral until labelled */
+            } else {
                 continue;
-
-            /* game over: dump the streamed record. TT-scored either way
-             * (double pass = natural, ply wall = adjudicated). */
-            uint8_t end_kind = puct_state(g)->n_pass >= 2
-                                 ? SP_END_NATURAL : SP_END_ADJUDICATED;
+            }
             SpGameRec gr = {.game_index = s->game_index,
                             .n_plies = (uint32_t)s->ply,
                             .b = (uint8_t)b,
@@ -342,13 +339,28 @@ int main(int argc, char **argv) {
             }
             printf("GAME idx=%u plies=%d end=%s score=%+.1f\n",
                    s->game_index, s->ply,
-                   end_kind == SP_END_NATURAL ? "natural" : "cap", score);
+                   end_kind == SP_END_NATURAL ? "natural"
+                 : end_kind == SP_END_PAUSED ? "paused" : "cap", score);
             fflush(stdout);
             finished++;
             s->live = 0;
             if (next_game >= games)
                 puct_set_suspended(g, true);   /* winding down: stop
                                                   thinking at the corpse */
+        }
+        if (now_s() - t_report >= 60.0) {      /* live block health */
+            uint64_t om = 0, cp = 0;
+            for (int i = 0; i < pool; i++) {
+                om += puct_oom_count(handles[i]);
+                cp += puct_compact_count(handles[i]);
+            }
+            double dt = now_s() - t0;
+            printf("STATUS t=%.0fs games=%u/%d rate=%.2f/s oom=%llu "
+                   "compact=%llu\n", dt, finished, games,
+                   dt > 0 ? finished / dt : 0.0,
+                   (unsigned long long)om, (unsigned long long)cp);
+            fflush(stdout);
+            t_report = now_s();
         }
     }
     close(fd);
@@ -364,12 +376,10 @@ int main(int argc, char **argv) {
     }
     printf("SUMMARY games=%u b=%d komi=%.1f sims=%d fast_sims=%d "
            "fast_p=%.2f pool=%d rows=%d elapsed=%.1fs rate=%.2f games/s "
-           "oom=%llu compact=%llu depth_mean=%.1f depth_max=%u "
-           "score_only=%u\n",
+           "oom=%llu compact=%llu depth_mean=%.1f depth_max=%u\n",
            finished, b, komi, sims, fast_sims, fast_p, pool, rows, dt,
            dt > 0 ? finished / dt : 0.0,
            (unsigned long long)oom, (unsigned long long)compact,
-           depth_thinks ? depth_sum / depth_thinks : 0.0, depth_max,
-           n_score_only);
+           depth_thinks ? depth_sum / depth_thinks : 0.0, depth_max);
     return 0;
 }

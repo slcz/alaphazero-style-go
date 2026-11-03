@@ -35,7 +35,7 @@ def test_train_step(sp_dir):
     assert np.isfinite(m["loss"])
     assert tr.steps == 6
     # losses: every head reported
-    for k in ("policy", "value", "aux", "own", "score_pdf", "score_cdf"):
+    for k in ("policy", "value", "aux", "own", "score"):
         assert np.isfinite(m[k])
 
 

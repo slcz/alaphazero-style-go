@@ -11,7 +11,7 @@ recomputed cheaply:
     mask   u8  [R,ceil(K/8)]     legal slots of the position (superko!)
     pi     f16 [R,K]             π̄ dense over slots (points, pass last)
     own    u8  [R,T]             {0,1,2} → {0,.5,1}, mover view
-    sb     i16 [R]               score bin
+    sc     f32 [R]               score margin, mover view
     win    u8 [R]                mover won
     aux_i  u16 [R]               opponent reply slot (0 when aux_w = 0)
     aux_w  u8 [R]
@@ -41,12 +41,11 @@ import numpy as np
 
 from go_ai.engine import Board
 from go_ai.net import features as F
-from go_ai.net.model import score_to_bin
 from go_ai.selfplay.shard import scan_shard
 from go_ai.train.symmetry import sym_point_map
 
-CACHE_FILE = "rows-v2.npz"
-KEYS = ("bits", "mask", "pi", "own", "sb", "win", "aux_i", "aux_w", "auxm",
+CACHE_FILE = "rows-v3.npz"
+KEYS = ("bits", "mask", "pi", "own", "sc", "win", "aux_i", "aux_w", "auxm",
         "game")
 BIN_DIMS = np.array([0, 1, 2, 3, 4, 5, 6, 11, 12, 13, 14, 15])
 OWN_LUT = np.array([0.0, 0.5, 1.0], np.float32)
@@ -104,7 +103,7 @@ def _empty_rows(b: int) -> dict:
             "mask": np.zeros((0, nb), np.uint8),
             "pi": np.zeros((0, T + 1), np.float16),
             "own": np.zeros((0, T), np.uint8),
-            "sb": np.zeros(0, np.int16), "win": np.zeros(0, np.uint8),
+            "sc": np.zeros(0, np.float32), "win": np.zeros(0, np.uint8),
             "aux_i": np.zeros(0, np.uint16), "aux_w": np.zeros(0, np.uint8),
             "auxm": np.zeros((0, nb), np.uint8),
             "game": np.zeros(0, np.uint32)}
@@ -138,7 +137,7 @@ def _game_rows(g) -> dict:
         out["pi"].append(p.astype(np.float16))
         own = own_black if side == 1 else 1.0 - own_black
         out["own"].append(np.rint(own * 2).astype(np.uint8))
-        out["sb"].append(score_to_bin(score if side == 1 else -score))
+        out["sc"].append(score if side == 1 else -score)
         out["win"].append(1 if (side == 1) == (score > 0) else 0)
         if i + 1 < n:                       # aux: the actual reply
             out["aux_i"].append(F.move_to_slot(g.plies[i + 1].move, b))
@@ -170,7 +169,7 @@ def build_rows(unit_dir, log=print) -> dict:
     out = {k: np.concatenate(v) for k, v in acc.items()}
     mb = sum(v.nbytes for v in out.values()) / 2**20
     log(f"  rows {Path(unit_dir).name}: {games} games, "
-        f"{len(out['sb'])} rows, {mb:.0f} MB, {time.time() - t0:.0f}s")
+        f"{len(out['sc'])} rows, {mb:.0f} MB, {time.time() - t0:.0f}s")
     return {**out, "b": np.int32(b), "komi": np.float32(komi)}
 
 
@@ -210,7 +209,7 @@ def alloc_batch(n: int, b: int) -> dict:
             "pi": np.zeros((n, T + 1), np.float32),
             "wdl": np.zeros((n, 2), np.float32),
             "own": np.zeros((n, T), np.float32),
-            "score_bin": np.zeros(n, np.int64),
+            "score": np.zeros(n, np.float32),
             "aux_idx": np.zeros(n, np.int64),
             "aux_mask": np.zeros((n, F.POLICY_MAX), bool),
             "aux_w": np.zeros(n, np.float32)}
@@ -258,7 +257,7 @@ def fill_batch(caches, picks, sym, out, b: int, komi: float) -> int:
         am[:, T] = abits[:, T]
 
         out["own"][sl] = OWN_LUT[c["own"][idx][:, inv]]
-        out["score_bin"][sl] = c["sb"][idx]
+        out["score"][sl] = c["sc"][idx]
         win = c["win"][idx]
         out["wdl"][sl, 0] = win
         out["wdl"][sl, 1] = 1.0 - win

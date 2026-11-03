@@ -29,6 +29,7 @@ MOVE_PASS = 0xFFFF
 
 SP_END_NATURAL = 1
 SP_END_ADJUDICATED = 3
+SP_END_PAUSED = 4        # selfplay stopped early; labels from the KataGo pass
 
 
 @dataclass(frozen=True)

@@ -332,26 +332,24 @@ static void do_showmem(const char *id) {
 }
 
 /* showstate — a text report of the two heads that are otherwise only
- * visible to the search: the score head's most likely result (and its
- * probability) and the ownership map, one grid cell per point,
- * X = black, O = white, '.' = undecided (|value| < 0.2). */
+ * visible to the search: the score head's predicted margin and the
+ * ownership map, one grid cell per point, X = black, O = white,
+ * '.' = undecided (|value| < 0.2). */
 static void do_showstate(const char *id) {
     const State *s = puct_state(g);
     int b = s->b;
-    float own[GO_MAX_POINTS], st[3];
-    if (puct_nn_raw(s, NULL, NULL, own, st) != 0)
+    float own[GO_MAX_POINTS], score_mover = 0.0f;
+    if (puct_nn_raw(s, NULL, NULL, own, &score_mover) != 0)
         return respond_err(id, "no evaluator");
 
     int black_to_move = s->side == BLACK;
     /* the heads are mover-view; report the score from black's side and the
      * map from the board's */
-    float score_black = black_to_move ? st[1] : -st[1];
-    float mean_black = black_to_move ? st[0] : -st[0];
+    float score_black = black_to_move ? score_mover : -score_mover;
 
     respond_start(id);
     printf("\n");
-    printf("score  %+.1f  (p %.1f%%)   mean %+.1f   komi %.1f\n",
-           score_black, 100.0 * st[2], mean_black,
+    printf("score  %+.1f   komi %.1f\n", score_black,
            (double)puct_state(g)->komi);
     printf("side to move: %s   (black view, points = black - white)\n",
            black_to_move ? "black" : "white");
@@ -518,16 +516,17 @@ int main(int argc, char **argv) {
             do_genmove(args, id);
             break;
         case 11: {                     /* analyze <color> <interval> */
-            float own[GO_MAX_POINTS], st[3];
+            float own[GO_MAX_POINTS], score_mover = 0.0f;
             if (puct_game_over(g)) {
                 respond(id, "%s", "info");
                 break;
             }
-            if (puct_nn_raw(puct_state(g), NULL, NULL, own, st) != 0) {
+            if (puct_nn_raw(puct_state(g), NULL, NULL, own, &score_mover)
+                != 0) {
                 respond_err(id, "no evaluator");
                 break;
             }
-            do_analyze(id, args, st[0]);
+            do_analyze(id, args, score_mover);
             break;
         }
         case 12:

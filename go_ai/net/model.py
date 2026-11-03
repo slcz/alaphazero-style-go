@@ -18,8 +18,8 @@ engine's ChessTransformer; heads and RoPE are Go-specific).
       │    search consumes is v = pW (= 1 at pure win)
       ├─ ownership head: Linear(d→1) per point (no pass) — mover-view
       │    own-probability via sigmoid in the loss
-      ├─ score head: mean-pool → MLP → SCORE_BINS logits (1-point bins
-      │    covering ±380, size-agnostic: the same head serves 7x7..19x19)
+      ├─ score head: mean-pool → MLP → 1 number, the predicted margin in
+      │    points (size-agnostic: the same head serves 7x7..19x19)
       └─ aux opponent-reply head: a second policy head (KataGo aux
            target), same masking contract
 
@@ -39,9 +39,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# Score belief: 1-point bins from -380..+380 (covers 19x19 + komi).
-SCORE_MIN = -380.0
-SCORE_BINS = 761
+# Score head: one real number, the predicted margin in points (mover's
+# view). A scalar, not a distribution: the bins cost a 761-way layer and a
+# cumsum, and everything downstream only ever consumed the mean.
 
 
 @dataclass
@@ -316,23 +316,18 @@ class OwnershipHead(nn.Module):
 
 
 class ScoreHead(nn.Module):
-    """Mean-pool → MLP → SCORE_BINS logits (pdf target; cdf derives)."""
+    """Mean-pool → MLP → one real number: the predicted margin in points."""
 
     def __init__(self, d_model: int):
         super().__init__()
         self.mlp = nn.Sequential(
             nn.Linear(d_model, d_model),
             nn.GELU(),
-            nn.Linear(d_model, SCORE_BINS),
+            nn.Linear(d_model, 1),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.mlp(x.mean(dim=1))                   # [B, SCORE_BINS]
-
-
-def score_to_bin(score_mover: float) -> int:
-    """Mover-view margin → bin index (clamped at the ±380 rails)."""
-    return min(max(int(round(score_mover - SCORE_MIN)), 0), SCORE_BINS - 1)
+        return self.mlp(x.mean(dim=1)).squeeze(-1)       # [B]
 
 
 # ---------------------------------------------------------------------------
@@ -349,7 +344,7 @@ class GoNet(nn.Module):
       "wdl"         [B, 2]    [pW, pL] logits (apply softmax in the loss)
       "value"       [B]       scalar v = pW ∈ [0, 1]
       "own"         [B, b²]   ownership logits (mover view, sigmoid in loss)
-      "score"       [B, SCORE_BINS]  score-belief logits (mover view)
+      "score"       [B]              predicted margin, points (mover view)
       "aux_logp"    [B, b²+1] opponent-reply head, same masking contract
                               (only when NetConfig.aux_reply)
 

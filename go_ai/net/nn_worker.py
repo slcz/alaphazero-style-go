@@ -40,14 +40,16 @@ NN_TOKENS, NN_TOKEN_DIM, NN_POLICY = 361, 18, 362
 def setup(ckpt: str, device: str, rows: int, banks: int = 1) -> dict:
     import sys as _sys
     print(f"SETUP ckpt={ckpt!r} device={device!r} rows={rows} banks={banks} "
-          f"score_util={os.environ.get('GO_SCORE_UTILITY', 'engine-default')} "
           f"cuda_avail={torch.cuda.is_available()} "
           f"count={torch.cuda.device_count()}", file=_sys.stderr)
     key = (ckpt, device)
     if key not in _MODELS:
         payload = torch.load(ckpt, map_location="cpu", weights_only=False)
         model = GoNet(NetConfig(**payload["net_config"]))
-        model.load_state_dict(payload["model"])
+        cur = model.state_dict()
+        sd = {k: v for k, v in payload["model"].items()
+              if k in cur and cur[k].shape == v.shape}
+        model.load_state_dict(sd, strict=False)   # old score head: fresh
         _MODELS[key] = model.to(device).eval()
     model = _MODELS[key]
 
@@ -59,7 +61,7 @@ def setup(ckpt: str, device: str, rows: int, banks: int = 1) -> dict:
                   ev_free=[torch.cuda.Event() for _ in range(banks)])
 
     sets = []
-    out = {"planes": [], "mask": [], "logp": [], "wdl": [], "score": []}
+    out = {"planes": [], "mask": [], "logp": [], "wdl": []}
     for _ in range(banks):
         try:
             pin = cuda
@@ -71,8 +73,7 @@ def setup(ckpt: str, device: str, rows: int, banks: int = 1) -> dict:
              "m": torch.zeros(rows, NN_POLICY, dtype=torch.bool,
                               pin_memory=pin),
              "lp": torch.empty(rows, NN_POLICY, pin_memory=pin),
-             "w": torch.empty(rows, 2, pin_memory=pin),
-             "sc": torch.empty(rows, pin_memory=pin)}
+             "w": torch.empty(rows, 2, pin_memory=pin)}
         if cuda:
             # device-side buffers per bank (static addresses), sized at
             # the MAX stride: the active board size is sliced per batch
@@ -84,7 +85,6 @@ def setup(ckpt: str, device: str, rows: int, banks: int = 1) -> dict:
                                   device=device)
             s["polf"] = torch.empty(rows, NN_POLICY, device=device)
             s["wdlf"] = torch.empty(rows, 2, device=device)
-            s["scf"] = torch.empty(rows, device=device)
         else:
             s["xd"] = torch.empty(rows, NN_TOKENS, NN_TOKEN_DIM,
                                   device=device,
@@ -96,7 +96,6 @@ def setup(ckpt: str, device: str, rows: int, banks: int = 1) -> dict:
         out["mask"].append(s["m"].data_ptr())
         out["logp"].append(s["lp"].data_ptr())
         out["wdl"].append(s["w"].data_ptr())
-        out["score"].append(s["sc"].data_ptr())
     # CUDA inference: FP8 weights + static-shape compile. NN_B (board
     # size) enables the fast path: one graph per size, waves always run
     # at the full padded row count (tail rows are stale, sliced off on
@@ -153,24 +152,9 @@ def raw(planes: bytes, mask: bytes, b: int) -> tuple:
         pol = out["policy_logp"][0, :T + 1].float().exp().cpu().numpy()
         wdl = torch.softmax(out["wdl"][0].float(), -1).cpu().numpy()
         own = torch.sigmoid(out["own"][0].float()).cpu().numpy()
-        from go_ai.net.model import SCORE_BINS, SCORE_MIN
-        bins = torch.arange(SCORE_BINS, device=out["score"].device,
-                            dtype=torch.float32) + SCORE_MIN
-        prob = torch.softmax(out["score"][0].float(), -1)
-        mean = (prob * bins).sum()
-        k = int(prob.argmax())
-        stats = torch.stack([mean, bins[k], prob[k]])
+        stats = out["score"][0].detach().float().reshape(1)
     return (pol.tobytes(), wdl.tobytes(), own.tobytes(),
             stats.cpu().numpy().astype(np.float32).tobytes())
-
-
-def _score_mean(logits: torch.Tensor) -> torch.Tensor:
-    """Score head logits [n, SCORE_BINS] -> mean margin in points."""
-    from go_ai.net.model import SCORE_BINS, SCORE_MIN
-    bins = torch.arange(SCORE_BINS, device=logits.device,
-                        dtype=torch.float32) + SCORE_MIN
-    p = torch.softmax(logits.float(), -1)
-    return (p * bins).sum(-1)
 
 
 def _active_b(bank: int, n: int) -> int:
@@ -228,7 +212,6 @@ def push(bank: int, n: int) -> int:
                     out["policy_logp"][:n, :b * b + 1])
                 s["wdlf"][:n].copy_(
                     torch.softmax(out["wdl"][:n].float(), dim=-1))
-                s["scf"][:n].copy_(_score_mean(out["score"][:n]))
                 _S["ev_fwd"][bank].record(_S["s_compute"])
                 return n
             if _S.get("bf16", True):
@@ -241,7 +224,6 @@ def push(bank: int, n: int) -> int:
             # wdl leaves the model as raw logits; the search backs up
             # w[0]-w[1], which is 2pW-1 only after a softmax
             s["wdlf"][:n].copy_(torch.softmax(out["wdl"].float(), dim=-1))
-            s["scf"][:n].copy_(_score_mean(out["score"]))
             _S["ev_fwd"][bank].record(_S["s_compute"])
     return n
 
@@ -254,7 +236,6 @@ def pull(bank: int, n: int) -> int:
     with torch.cuda.stream(_S["s_d2h"]):
         s["lp"][:n].copy_(s["polf"][:n], non_blocking=True)
         s["w"][:n].copy_(s["wdlf"][:n], non_blocking=True)
-        s["sc"][:n].copy_(s["scf"][:n], non_blocking=True)
         _S["ev_free"][bank].record(_S["s_d2h"])
     return n
 

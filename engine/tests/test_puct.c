@@ -44,7 +44,7 @@ typedef struct { int calls; } CountCtx;
 
 static void eval_count(void *ctx, PuctEvalOp op, int bank, int n,
                        const float *planes, const uint8_t *masks,
-                       float *logp, float *wdl, float *score) {
+                       float *logp, float *wdl) {
     (void)bank; (void)planes; (void)masks;
     if (op != PUCT_EVAL_PUSH)
         return;                     /* PULL/WAIT are no-ops for sync evals */
@@ -55,13 +55,12 @@ static void eval_count(void *ctx, PuctEvalOp op, int bank, int n,
                PUCT_POLICY_SIZE * sizeof(float));
         float *w = wdl + (size_t)r * 2;
         w[0] = 0.5f; w[1] = 0.5f;
-        score[r] = 0.0f;
     }
 }
 
 static void eval_mover_wins(void *ctx, PuctEvalOp op, int bank, int n,
                             const float *planes, const uint8_t *masks,
-                            float *logp, float *wdl, float *score) {
+                            float *logp, float *wdl) {
     (void)ctx; (void)bank; (void)planes; (void)masks;
     if (op != PUCT_EVAL_PUSH)
         return;
@@ -70,13 +69,12 @@ static void eval_mover_wins(void *ctx, PuctEvalOp op, int bank, int n,
                PUCT_POLICY_SIZE * sizeof(float));
         float *w = wdl + (size_t)r * 2;
         w[0] = 1.0f; w[1] = 0.0f;
-        score[r] = 0.0f;
     }
 }
 
 static void eval_pattern(void *ctx, PuctEvalOp op, int bank, int n,
                          const float *planes, const uint8_t *masks,
-                         float *logp, float *wdl, float *score) {
+                         float *logp, float *wdl) {
     (void)ctx; (void)bank; (void)planes; (void)masks;
     if (op != PUCT_EVAL_PUSH)
         return;
@@ -86,96 +84,10 @@ static void eval_pattern(void *ctx, PuctEvalOp op, int bank, int n,
             lp[s] = (s % 7 == 0) ? 1.5f : 0.0f;
         float *w = wdl + (size_t)r * 2;
         w[0] = 0.5f; w[1] = 0.5f;
-        score[r] = 0.0f;
     }
 }
 
 /* ---- 1. policy slot ------------------------------------------------------ */
-
-/* wdl = +0.5 and score mean = +14 for every row, at b = 7: the leaf
- * utility is 0.5 + w*tanh(14/14). */
-static void eval_fixed_score(void *ctx, PuctEvalOp op, int bank, int n,
-                             const float *planes, const uint8_t *masks,
-                             float *logp, float *wdl, float *score) {
-    (void)ctx; (void)bank; (void)planes; (void)masks;
-    if (op != PUCT_EVAL_PUSH)
-        return;
-    for (int r = 0; r < n; r++) {
-        memset(logp + (size_t)r * PUCT_POLICY_SIZE, 0,
-               PUCT_POLICY_SIZE * sizeof(float));
-        float *w = wdl + (size_t)r * 2;
-        w[0] = 0.75f; w[1] = 0.25f;
-        score[r] = 14.0f;
-    }
-}
-
-static void test_leaf_score_utility(void) {
-    /* The score head's mean must reach the leaf backup through the eval
-     * row: utility = 0.5 + w*tanh(14/(2*7)), seen negated at the root.
-     * One playout only, so the child carries just its own evaluation (a
-     * deeper tree mixes in sign-flipped backups from the ply below). */
-    puct_set_score_utility(0.10);
-    PuctGame *g = puct_game_new(0, 7, 9.5f, 400);
-    CHECK(g != NULL);
-    puct_set_eval(eval_fixed_score, NULL);
-    puct_think(g, 1);
-
-    double want = -(0.5 + 0.10 * tanh(14.0 / 14.0));
-    uint16_t moves[MAX_MOVES];
-    uint32_t visits[MAX_MOVES];
-    double q[MAX_MOVES];
-    int n = puct_root_children(g, moves, visits, q, NULL);
-    CHECK(n == 50);
-    int leaves = 0;             /* children with no subtree of their own */
-    for (int i = 0; i < n; i++) {
-        if (visits[i] != 1)
-            continue;           /* deeper means sign-flipped backups, too */
-        leaves++;
-        CHECK(near_d(q[i], want, 1e-6));
-    }
-    CHECK(leaves >= 1);
-    puct_game_free(g);
-}
-
-static void test_score_only_mode_and_tree_reset(void) {
-    /* SCORE mode drops win/loss and uses the margin alone, scaled to the
-     * mixed range; clearing the tree must leave the state alone. */
-    puct_set_score_utility(0.10);
-    PuctGame *g = puct_game_new(0, 7, 9.5f, 400);
-    CHECK(puct_utility_mode(g) == PUCT_UTIL_MIXED);
-    puct_set_utility_mode(g, PUCT_UTIL_SCORE);
-    CHECK(puct_utility_mode(g) == PUCT_UTIL_SCORE);
-    puct_set_eval(eval_fixed_score, NULL);
-
-    puct_think(g, 64);
-    uint16_t mv[MAX_MOVES];
-    uint32_t vis[MAX_MOVES];
-    double q[MAX_MOVES];
-    int n = puct_root_children(g, mv, vis, q, NULL);
-    CHECK(n == 50);
-    double want = -((1.0 + 0.10) * tanh(14.0 / 14.0));   /* wdl ignored */
-    int leaves = 0;
-    for (int i = 0; i < n; i++)
-        if (vis[i] == 1) {
-            leaves++;
-            CHECK(near_d(q[i], want, 1e-6));
-        }
-    CHECK(leaves >= 1);
-
-    /* reset drops the tree but not the position */
-    puct_play(g, mv[0]);
-    int ply = puct_state(g)->ply;
-    puct_clear_tree(g);
-    CHECK(puct_state(g)->ply == ply);
-    CHECK(puct_root_children(g, mv, vis, q, NULL) == 0);
-    puct_think(g, 8);                    /* rebuilds from scratch */
-    CHECK(puct_root_children(g, mv, vis, q, NULL) >= 49);   /* 7x7 - 1 */
-
-    puct_game_reset(g);                  /* a new game is mixed again */
-    CHECK(puct_utility_mode(g) == PUCT_UTIL_MIXED);
-    CHECK(puct_state(g)->ply == 0);
-    puct_game_free(g);
-}
 
 static void test_policy_slot(void) {
     State s7, s9;
@@ -267,50 +179,14 @@ static void test_value_sign(void) {
     puct_game_free(g);
 }
 
-/* ---- 3b. terminal utility includes the static score term --------------- */
-
-static void test_terminal_score_utility(void) {
-    /* Same position as test_wall_terminal with KataGo's default weight:
-     * a terminal's utility is ±1 plus 0.10 * tanh(margin / (2*b)).
-     * pass:  white to move, margin -9.5  -> -1 - 0.10*tanh(9.5/14)
-     * point: white to move, margin -39.5 -> -1 - 0.10*tanh(39.5/14)
-     * and the root sees both negated (root is black). */
-    puct_set_score_utility(0.10);
-    PuctGame *g = puct_game_new(0, 7, 9.5f, 1);
-    CHECK(g != NULL);
-    CountCtx cc = {0};
-    puct_set_eval(eval_count, &cc);
-    puct_think(g, 200);
-
-    double q_pass = -1.0 - 0.10 * tanh(9.5 / 14.0);
-    double q_point = 1.0 + 0.10 * tanh(39.5 / 14.0);
-    uint16_t moves[MAX_MOVES];
-    uint32_t visits[MAX_MOVES];
-    double q[MAX_MOVES];
-    int n = puct_root_children(g, moves, visits, q, NULL);
-    CHECK(n == 50);
-    for (int i = 0; i < n; i++) {
-        if (!visits[i])
-            continue;
-        double want = moves[i] == MOVE_PASS ? q_pass : q_point;
-        CHECK(near_d(q[i], want, 1e-6));
-    }
-    puct_game_free(g);
-    puct_set_score_utility(0.10);              /* the documented default */
-}
-
 /* ---- 4. TT terminal wall: ply cap ends the game in-search ---------------- */
 
 static void test_wall_terminal(void) {
     /* maxply 1: every root child lands on the ply wall and terminates.
      * Strict TT: one stone on an empty board reaches the whole empty
      * region, so every point move OWNS the board — 49 − 9.5 = +39.5, a
-     * proven win — while pass loses by komi. Both signs proven in one
-     * position, and the ONLY eval row is the root expansion.
-     *
-     * Pure win/loss here (weight 0); test_terminal_score_utility pins the
-     * blended values. */
-    puct_set_score_utility(0.0);
+     * proven win (+1) — while pass loses by komi (−1). Both signs proven
+     * in one position, and the ONLY eval row is the root expansion. */
     PuctGame *g = puct_game_new(0, 7, 9.5f, 1);
     CHECK(g != NULL);
     CountCtx cc = {0};
@@ -795,9 +671,6 @@ int main(int argc, char **argv) {
     test_bookkeeping();
     test_value_sign();
     test_wall_terminal();
-    test_terminal_score_utility();
-    test_leaf_score_utility();
-    test_score_only_mode_and_tree_reset();
     test_determinism();
     test_prior_pattern();
     test_slot_fuzz();

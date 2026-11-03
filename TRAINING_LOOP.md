@@ -56,13 +56,6 @@ pack to the model repo, the shard to the dataset repo.
 - Search: RPO MCTS (`puct.c`), pi-bar sampling at every descent, 4
   walkers/game, double-banked eval landing zone batched across the
   pool, FP8 static-wave inference on the 5090.
-- The backed-up value is *utility*, not winrate:
-  `utility = (pW - pL) + 0.10 * tanh(margin / (2b))` — KataGo's
-  `staticScoreUtilityFactor`, with the margin from the score head's mean
-  at a net leaf and from the exact TT score at a terminal (so both sides
-  share one scale). `GO_SCORE_UTILITY=0` restores pure win/loss.
-  Everything the driver reports as `value`/`outlook`, and the gate's
-  resign threshold, is therefore on the utility scale (range ±1.1).
 - Memory: byte-arena node blocks; children are 8B `PuctEdge` arrays,
   materializing a 20B `PuctNode` on first visit (`PuctEdge.child`).
 - Move selection: sampled pi-bar for the first `sample_plys` (10),

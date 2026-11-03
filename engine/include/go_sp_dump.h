@@ -67,7 +67,9 @@ enum {
     SP_END_PLAYING = 0,  /* never written — reader-side state only */
     SP_END_NATURAL,      /* double pass */
     SP_END_RESIGN,       /* reserved: eval-only, never in selfplay shards */
-    SP_END_ADJUDICATED   /* maxply reached */
+    SP_END_ADJUDICATED,  /* maxply reached */
+    SP_END_PAUSED        /* selfplay stopped once the result was certain;
+                          * score/ownership come from the KataGo labeler */
 };
 
 /* One ply as the driver records it, before serialization. π̄ is dense

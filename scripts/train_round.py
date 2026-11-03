@@ -148,7 +148,7 @@ def main() -> int:
             print(f"step {step + 1}/{steps} loss {m['loss']:.4f} "
                   f"policy {m['policy']:.4f} (acc {m['policy_acc']:.3f}) "
                   f"value {m['value']:.4f} own {m['own']:.4f} "
-                  f"score {m['score_pdf']:.4f}", flush=True)
+                  f"score {m['score']:.3f}", flush=True)
 
     out = Path(args.out)
     trainer.save(out)

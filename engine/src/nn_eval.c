@@ -21,12 +21,11 @@ static int nn_ready = 0;
 
 static void nn_eval(void *ctx, PuctEvalOp op, int bank, int n,
                     const float *planes, const uint8_t *masks, float *logp,
-                    float *wdl, float *score) {
+                    float *wdl) {
     (void)planes;
     (void)masks;
     (void)logp;
     (void)wdl;
-    (void)score;
     NnCtx *c = ctx;
     const char *meth = op == PUCT_EVAL_PUSH ? "push"
                      : op == PUCT_EVAL_PULL ? "pull" : "wait_ready";
@@ -81,8 +80,7 @@ int puct_attach_nn(const char *ckpt, const char *device, int rows) {
         PyObject *mv = PyDict_GetItemString(res, "mask");
         PyObject *lv = PyDict_GetItemString(res, "logp");
         PyObject *wv = PyDict_GetItemString(res, "wdl");
-        PyObject *sv = PyDict_GetItemString(res, "score");
-        if (!pv || !mv || !lv || !wv || !sv ||
+        if (!pv || !mv || !lv || !wv ||
             !PyList_Check(pv) || PyList_Size(pv) != PUCT_BANKS) {
             Py_DECREF(res);
             Py_DECREF(mod);
@@ -97,9 +95,7 @@ int puct_attach_nn(const char *ckpt, const char *device, int rows) {
                               (float *)PyLong_AsUnsignedLongLong(
                                   PyList_GetItem(lv, b)),
                               (float *)PyLong_AsUnsignedLongLong(
-                                  PyList_GetItem(wv, b)),
-                              (float *)PyLong_AsUnsignedLongLong(
-                                  PyList_GetItem(sv, b)));
+                                  PyList_GetItem(wv, b)));
     }
     NnCtx *c = malloc(sizeof *c);
     c->worker = mod;
@@ -131,7 +127,7 @@ static PyObject *raw_fn(void) {
 }
 
 int puct_nn_raw(const State *s, float *policy, float *wdl, float *own,
-                float stats[3]) {
+                float *score) {
     int b = s->b, n = b * b;
     if (!nn_ready)
         return -1;
@@ -168,8 +164,8 @@ int puct_nn_raw(const State *s, float *policy, float *wdl, float *own,
         if (own)
             memcpy(own, PyBytes_AsString(PyTuple_GET_ITEM(r, 2)),
                    (size_t)n * sizeof(float));
-        if (stats)
-            memcpy(stats, PyBytes_AsString(PyTuple_GET_ITEM(r, 3)),
+        if (score)
+            memcpy(score, PyBytes_AsString(PyTuple_GET_ITEM(r, 3)),
                    3 * sizeof(float));
         rc = 0;
     } else if (!r) {

@@ -31,7 +31,7 @@ def _games():
 
 
 def _check(out, ref, mask_key="mask"):
-    for k in ("tokens", mask_key, "own", "score_bin", "wdl", "aux_idx",
+    for k in ("tokens", mask_key, "own", "score", "wdl", "aux_idx",
               "aux_mask", "aux_w"):
         a, e = out[k][0], np.asarray(ref[k])
         if k == "aux_w":

@@ -8,8 +8,9 @@ trainer; losses extended with the Go targets).
           + own_weight · ownership_loss        (per-point BCE, mean over
                                                 points; KataGo wo=1.5/b²
                                                 is the mean form)
-          + score_pdf_weight · score_pdf_loss  (bin CE; KataGo 0.02)
-          + score_cdf_weight · score_cdf_loss  (cdf MSE; KataGo 0.02)
+          + score_weight · score_loss          (Huber on the margin, in
+                                                points; smooth L1 so a
+                                                blowout cannot dominate)
 
 Adam (fused on CUDA), gradient clipping, bf16 autocast, torch.compile —
 all as in chess. Checkpoints are atomic (tmp + rename) and carry the
@@ -39,8 +40,7 @@ class TrainConfig:
     policy_weight: float = 1.0
     aux_reply_weight: float = 0.15    # KataGo wopp
     own_weight: float = 1.5           # KataGo wo (mean-over-points form)
-    score_pdf_weight: float = 0.02    # KataGo wspdf
-    score_cdf_weight: float = 0.02    # KataGo wscdf
+    score_weight: float = 0.05        # Huber on the predicted margin
     grad_clip: Optional[float] = 1.0
     weight_decay: float = 0.0
     bf16: bool = True              # CUDA autocast (no-op off CUDA)
@@ -77,7 +77,7 @@ _TORCH_DTYPES = {
     "pi": torch.float32,
     "wdl": torch.float32,
     "own": torch.float32,
-    "score_bin": torch.int64,
+    "score": torch.float32,
     "aux_idx": torch.int64,
     "aux_mask": torch.bool,
     "aux_w": torch.float32,
@@ -174,26 +174,16 @@ class Trainer:
             else:
                 own_loss = torch.zeros((), device=self.device)
 
-            if "score_bin" in batch:
-                score_logp = F.log_softmax(out["score"], dim=-1)
-                score_pdf_loss = F.nll_loss(score_logp, batch["score_bin"])
-
-                with torch.no_grad():        # target cdf from the one-hot
-                    tgt = torch.zeros_like(score_logp)
-                    tgt.scatter_(1, batch["score_bin"][:, None], 1.0)
-                    tgt_cdf = tgt.cumsum(dim=1)
-                score_cdf_loss = ((score_logp.exp().cumsum(dim=1) - tgt_cdf)
-                                  ** 2).mean()
+            if "score" in batch:
+                score_loss = F.smooth_l1_loss(out["score"], batch["score"])
             else:
-                score_pdf_loss = torch.zeros((), device=self.device)
-                score_cdf_loss = torch.zeros((), device=self.device)
+                score_loss = torch.zeros((), device=self.device)
 
             loss = (self.cfg.policy_weight * policy_loss
                     + self.cfg.value_weight * value_loss
                     + self.cfg.aux_reply_weight * aux_loss
                     + self.cfg.own_weight * own_loss
-                    + self.cfg.score_pdf_weight * score_pdf_loss
-                    + self.cfg.score_cdf_weight * score_cdf_loss)
+                    + self.cfg.score_weight * score_loss)
 
             scalars = {
                 "loss": loss.detach(),
@@ -201,8 +191,7 @@ class Trainer:
                 "value": value_loss.detach(),
                 "aux": aux_loss.detach(),
                 "own": own_loss.detach(),
-                "score_pdf": score_pdf_loss.detach(),
-                "score_cdf": score_cdf_loss.detach(),
+                "score": score_loss.detach(),
                 "policy_acc": policy_acc.detach(),
                 "value_acc": (out["wdl"].argmax(-1)
                               == batch["wdl"].argmax(-1)).float().mean(),
@@ -304,7 +293,17 @@ class Trainer:
         sd = {k: (v.squeeze(-1).squeeze(-1) if v.dim() == 4
                   and k.endswith(("ff.up.weight", "ff.down.weight")) else v)
               for k, v in payload["model"].items()}
-        model.load_state_dict(sd, strict=strict)
+        # a changed head (e.g. the score head went from 761 bins to one
+        # real number) cannot load its old weights: drop just those and
+        # warm-start the rest
+        cur = model.state_dict()
+        dropped = [k for k, v in sd.items()
+                   if k in cur and cur[k].shape != v.shape]
+        for k in dropped:
+            del sd[k]
+        if dropped:
+            print(f"warm start: fresh weights for {dropped}")
+        model.load_state_dict(sd, strict=strict and not dropped)
         # fp8 tensors cannot move to MPS/CPU backends — ship them bf16:
         # dequantize the FP8 linears and run the whole network bf16
         if payload["net_config"].get("fp8") \

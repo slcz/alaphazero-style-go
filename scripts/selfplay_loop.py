@@ -234,12 +234,10 @@ def generate(args, best: Path, unit_dir: Path, seed: int) -> int:
     # board size; see go_ai/net/nn_worker.py setup()).
     env = dict(os.environ, NN_B=str(args.b),
                NN_BF16="1", NN_COMPILE="1")
-    if args.score_utility is not None:
-        env["GO_SCORE_UTILITY"] = str(args.score_utility)
     cmd = [str(SELFPLAY), str(best), str(unit_dir), str(args.games),
            str(args.b), str(args.komi), str(args.sims), str(args.pool),
            str(args.rows), str(args.sample_plys), str(args.max_plys),
-           "4", args.device, str(seed), str(args.fast_sims),
+           str(args.block_mb), args.device, str(seed), str(args.fast_sims),
            str(args.fast_p)]
     return pump(cmd, unit_dir.parent / "generate.log", env=env)
 
@@ -254,6 +252,15 @@ def train(args, work: Path, base: Path, out: Path) -> int:
            "--device", args.device, "--json", str(out.parent /
                                                    "train.json")]
     return pump(cmd, out.parent / "train.log")
+
+
+def kata_label(unit: Path, log_path: Path) -> int:
+    """Fill score/ownership for games selfplay paused (GO_PAUSE_V)."""
+    if os.environ.get("GO_PAUSE_V", "0") in ("", "0"):
+        return 0
+    cmd = [sys.executable, "scripts/kata_label.py",
+           str(unit / "shard-0.spbin")]
+    return pump(cmd, log_path)
 
 
 def gate(args, candidate: Path, best: Path, eval_json: Path) -> float | None:
@@ -300,13 +307,13 @@ def main() -> int:
     ap.add_argument("--pool", type=int, default=1024)
     ap.add_argument("--rows", type=int, default=2048)
     ap.add_argument("--sample-plys", type=int, default=10)
+    ap.add_argument("--block-mb", type=int, default=4,
+                    help="MCTS node block per game in MB; a 19x19 node is "
+                         "~4x a 9x9 one, so bigger boards want more")
     ap.add_argument("--max-plys", type=int, default=150)
     ap.add_argument("--epochs", type=int, default=1)
     ap.add_argument("--batch", type=int, default=4096)
     ap.add_argument("--lr", type=float, default=2e-4)
-    ap.add_argument("--score-utility", type=float, default=None,
-                    help="static score term in the search utility (default: "
-                         "the engine's, 0.10; 0 = pure win/loss)")
     ap.add_argument("--buffer-keep", type=float, default=1 / 3,
                     help="fraction of an old round kept per iteration "
                          "(1/3 → 1, 1/3, 1/9 ... of successive rounds)")
@@ -338,8 +345,6 @@ def main() -> int:
             log(f"seeded best.pt from {init}")
         else:
             random_init_checkpoint(best, args.seed)
-    su = args.score_utility if args.score_utility is not None else 0.10
-    log(f"search utility: w_score={su}  buffer_keep={args.buffer_keep}")
     log(f"work {work} | best {best.name} sha {sha256(best)[:12]} | "
         f"{'forever' if args.forever else args.iterations} x "
         f"({args.games} games @ {args.b}x{args.b} "
@@ -381,6 +386,10 @@ def main() -> int:
                     f"{time.time() - t0:.0f}s")
             else:
                 log(f"it{it}: reusing existing shard ({games} games)")
+            rc = kata_label(unit, d / "kata_label.log")
+            if rc != 0:
+                log(f"it{it}: kata labelling FAILED ({rc}) — paused games "
+                    f"keep placeholder labels")
             buf = update_buffer(work, it, args.buffer_keep, args.seed)
             n_buf = sum(len(x["games"]) for x in buf["rounds"])
             log(f"it{it}: training on {n_buf} buffered games "

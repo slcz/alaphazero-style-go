@@ -15,7 +15,7 @@ Sample schema (numpy; b = game.b, T = b*b):
                             disk), 0 on padding
     wdl       [2]      f32   mover-view [W, L] one-hot from the game score
     own       [T]      f32   mover-view ownership {0, .5, 1}
-    score_bin [1]      i64   mover-view margin → 1-point bin (model.py)
+    score     [1]      f32   mover-view margin in points
     aux_idx   [1]      i64   the opponent's actual reply, in OUR frame
     aux_mask  [362]    bool  legal slots of the position after our move
     aux_w     [1]      f32   0 when the game ended before a reply
@@ -33,8 +33,7 @@ import numpy as np
 
 from go_ai.engine import BLACK, TERM_OVER, Board
 from go_ai.net import features as F
-from go_ai.net.model import score_to_bin
-from go_ai.selfplay.shard import MOVE_PASS, SpGame
+from go_ai.selfplay.shard import MOVE_PASS, SP_END_PAUSED, SpGame
 from go_ai.train.symmetry import transform_sample
 
 K = F.PI_SUPPORT_MAX
@@ -97,7 +96,7 @@ def selfplay_sample(game: SpGame, i: int, sym: int = 0) -> Dict[str, np.ndarray]
         "pi_probs": pi_probs,
         "wdl": F.wdl_onehot(score_mover > 0),
         "own": own_mover,
-        "score_bin": np.int64(score_to_bin(score_mover)),
+        "score": np.float32(score_mover),
         "aux_idx": np.int64(aux_idx),
         "aux_mask": aux_mask,
         "aux_w": np.float32(aux_w),
@@ -125,9 +124,15 @@ def selfplay_samples(game: SpGame, syms=(0,)) -> List[Dict[str, np.ndarray]]:
         board.push(ply.move)
 
     code, score, own_black = board.termination()
-    assert code == TERM_OVER
-    assert abs(score - game.score) < 1e-4, \
-        f"replayed score {score} != recorded {game.score}"
+    if game.end_kind == SP_END_PAUSED:
+        # selfplay stopped early: the score/ownership labels come from the
+        # KataGo pass over this position, not from playing it out
+        score = float(game.score)
+        own_black = np.asarray(game.ownership, dtype=np.float32)
+    else:
+        assert code == TERM_OVER
+        assert abs(score - game.score) < 1e-4, \
+            f"replayed score {score} != recorded {game.score}"
     assert score != 0.0, "jigo in selfplay (fractional komi required)"
     own_black = np.asarray(game.ownership, dtype=np.float32)
 
@@ -165,7 +170,7 @@ def selfplay_samples(game: SpGame, syms=(0,)) -> List[Dict[str, np.ndarray]]:
             "pi_probs": pi_probs,
             "wdl": F.wdl_onehot(mover_wins),
             "own": own_mover.astype(np.float32),
-            "score_bin": np.int64(score_to_bin(score_mover)),
+            "score": np.float32(score_mover),
             "aux_idx": np.int64(aux_idx),
             "aux_mask": aux_mask,
             "aux_w": np.float32(aux_w),

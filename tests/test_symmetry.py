@@ -87,7 +87,7 @@ def test_samples_all_syms(sp_dir):
                 # wdl / score invariant
                 o = selfplay_samples(g, syms=(0,))[ti - 1]
                 assert (smp["wdl"] == o["wdl"]).all()
-                assert smp["score_bin"] == o["score_bin"]
+                assert smp["score"] == o["score"]
                 # aux reply legal in the transformed after-position
                 assert smp["aux_mask"][smp["aux_idx"]] or smp["aux_w"] == 0
             replay.push(transform_move(p.move, b, s))
