@@ -112,7 +112,9 @@ def update_buffer(work: Path, it: int, keep: float, seed: int) -> dict:
     (expected buffer ≈ keep/(1-keep) extra rounds). The same per-round RNG
     stream at a smaller p makes each trim a subset of the last."""
     rounds = []
-    for f in sorted(work.glob("it*/selfplay/shard-0.spbin")):
+    shards = sorted(list(work.glob("it*/selfplay/shard-0.spbin"))
+                    + list(work.glob("it*/sp*/shard-0.spbin")))
+    for f in shards:
         r = int(f.parent.parent.name[2:])
         done = f.parent / "DONE.json"
         if r > it or not done.exists():
@@ -120,19 +122,18 @@ def update_buffer(work: Path, it: int, keep: float, seed: int) -> dict:
         n = (json.loads(done.read_text()).get("games_done")
              or count_games(f.parent))
         if n:
-            rounds.append((r, n))
+            rounds.append((r, n, f.relative_to(work).as_posix()))
     rec = {"version": 1, "keep": keep, "seed": seed, "iteration": it,
            "rounds": []}
-    newest = rounds[-1][1] if rounds else 0
-    for r, n in rounds:
-        rng = random.Random(seed * 7919 + r)
+    newest = max((n for _r, n, _p in rounds), default=0)
+    for r, n, rel in rounds:
+        rng = random.Random(seed * 7919 + r * 4096 + len(rel) + hash(rel) % 97)
         p = keep ** (it - r)
         games = [g for g in range(n) if rng.random() < p]
         if len(games) < 0.005 * newest:      # < 0.5% of the draw: drop the
             continue                          # round (bounds the window)
-        rec["rounds"].append({
-            "round": r, "shard": f"it{r:03d}/selfplay/shard-0.spbin",
-            "count": n, "games": games})
+        rec["rounds"].append({"round": r, "shard": rel, "count": n,
+                              "games": games})
     path = work / "buffer.json"
     path.write_text(json.dumps(rec))
     log(f"it{it}: buffer {[(x['round'], len(x['games'])) for x in rec['rounds']]}"
@@ -145,7 +146,8 @@ def update_buffer(work: Path, it: int, keep: float, seed: int) -> dict:
 def prune(work: Path, it: int, live: set) -> None:
     """Bound disk for a run that never ends: row caches of rounds the
     buffer dropped, and mid-training checkpoints of finished rounds."""
-    for f in work.glob("it*/selfplay/rows-*.npz"):
+    for f in list(work.glob("it*/selfplay/rows-*.npz")) \
+            + list(work.glob("it*/sp*/rows-*.npz")):
         if int(f.parent.parent.name[2:]) not in live:
             f.unlink(missing_ok=True)
     for f in work.glob("it*/train.ck.pt"):
@@ -229,15 +231,43 @@ def ensure_done(unit_dir: Path, seed: int) -> bool:
     return True
 
 
-def generate(args, best: Path, unit_dir: Path, seed: int) -> int:
+def size_plans(args):
+    """[(b, games, komi, rows, block_mb, pool, max_plys)] for this round.
+
+    Mixed boards keep the wave TOKEN count constant (rows ∝ 1/b²), the node
+    block ∝ b² (a 15x15 node is ~3x a 9x9 one) and the pool inside a host
+    RAM budget, so VRAM and memory do not move with the board size."""
+    if not args.sizes:
+        return [(args.b, args.games, args.komi, args.rows, args.block_mb,
+                 args.pool, args.max_plys)]
+    out = []
+    for spec in args.sizes.split(","):
+        b, games = (int(x) for x in spec.split(":"))
+        komi = 9.5 if b == 7 else 7.5
+        rows = max(64, int(round(args.rows * 81.0 / (b * b))))
+        block = max(2, int(round(args.block_mb * b * b / 81.0)))
+        pool = min(args.pool, max(64, (12 * 1024) // block))
+        maxply = args.max_plys if b <= 11 else args.max_plys + 50
+        out.append((b, games, komi, rows, block, pool, maxply))
+    return out
+
+
+def unit_of(d: Path, args, b: int) -> Path:
+    """Unit dir: itNNN/selfplay when there is one size, itNNN/spB when
+    mixed (the buffer and prune globs cover both)."""
+    return d / (f"sp{b}" if args.sizes else "selfplay")
+
+
+def generate(args, best: Path, unit_dir: Path, seed: int, b: int,
+             komi: float, rows: int, block_mb: int, pool: int,
+             max_plys: int) -> int:
     # NN_B turns on the FP8 static-wave inference path (one graph per
     # board size; see go_ai/net/nn_worker.py setup()).
-    env = dict(os.environ, NN_B=str(args.b),
-               NN_BF16="1", NN_COMPILE="1")
+    env = dict(os.environ, NN_B=str(b), NN_BF16="1", NN_COMPILE="1")
     cmd = [str(SELFPLAY), str(best), str(unit_dir), str(args.games),
-           str(args.b), str(args.komi), str(args.sims), str(args.pool),
-           str(args.rows), str(args.sample_plys), str(args.max_plys),
-           str(args.block_mb), args.device, str(seed), str(args.fast_sims),
+           str(b), str(komi), str(args.sims), str(pool),
+           str(rows), str(args.sample_plys), str(max_plys),
+           str(block_mb), args.device, str(seed), str(args.fast_sims),
            str(args.fast_p)]
     return pump(cmd, unit_dir.parent / "generate.log", env=env)
 
@@ -292,6 +322,10 @@ def main() -> int:
     ap.add_argument("--forever", action="store_true",
                     help="run until stopped; iteration numbers advance from "
                          "loop.jsonl on every restart")
+    ap.add_argument("--sizes", default="",
+                    help="mixed boards, e.g. 9:15000,11:5000,13:5000,"
+                         "15:5000 — overrides --games/--b and writes "
+                         "itNNN/spB/ instead of itNNN/selfplay/")
     ap.add_argument("--games", type=int, default=30000)
     ap.add_argument("--sims", type=int, default=300)
     ap.add_argument("--fast-sims", type=int, default=50)
@@ -355,29 +389,38 @@ def main() -> int:
     limit = None if args.forever else args.iterations
     while limit is None or it <= limit:
         d = work / f"it{it:03d}"
-        unit = d / "selfplay"
         d.mkdir(parents=True, exist_ok=True)
         ckpt = d / "train.pt"
+        plans = size_plans(args)
+        units = [(p, unit_of(d, args, p[0])) for p in plans]
+        if args.sizes:
+            log(f"it{it}: sizes " + " ".join(
+                f"{p[0]}x{p[0]}x{p[1]}g(rows {p[3]}, blk {p[4]}MB, "
+                f"pool {p[5]})" for p in plans))
         t0 = time.time()
 
-        games = count_games(unit)   # defined on every path (record below)
+        games = sum(count_games(u) for _p, u in units)
         if not ckpt.exists():
-            ensure_done(unit, args.seed + it)
-            games = count_games(unit)
-            if games < args.games:
-                if games:
-                    log(f"it{it}: shard has {games}/{args.games}, "
-                        f"regenerating")
-                    shutil.rmtree(unit, ignore_errors=True)
-                log(f"it{it}: generating {args.games} games")
-                rc = generate(args, best, unit, args.seed + it)
-                if rc != 0:
-                    return rc
-                games = count_games(unit)
-                log(f"it{it}: generated {games} games in "
-                    f"{time.time() - t0:.0f}s")
-            else:
-                log(f"it{it}: reusing existing shard ({games} games)")
+            for plan, unit in units:
+                b, ng, komi, rows, block, pool, maxply = plan
+                ensure_done(unit, args.seed + it)
+                have = count_games(unit)
+                if have < ng:
+                    if have:
+                        log(f"it{it}: {b}x{b} shard has {have}/{ng}, "
+                            f"regenerating")
+                        shutil.rmtree(unit, ignore_errors=True)
+                    log(f"it{it}: generating {ng} games at {b}x{b} "
+                        f"(rows {rows}, block {block}MB, pool {pool})")
+                    rc = generate(args, best, unit, args.seed + it, b, komi,
+                                  rows, block, pool, maxply)
+                    if rc != 0:
+                        return rc
+                    log(f"it{it}: {b}x{b} generated {count_games(unit)} games")
+                else:
+                    log(f"it{it}: reusing {b}x{b} shard ({have} games)")
+            games = sum(count_games(u) for _p, u in units)
+            log(f"it{it}: {games} games in {time.time() - t0:.0f}s")
             buf = update_buffer(work, it, args.buffer_keep, args.seed)
             n_buf = sum(len(x["games"]) for x in buf["rounds"])
             log(f"it{it}: training on {n_buf} buffered games "

@@ -100,18 +100,35 @@ def main() -> int:
         print("no trainable rows", file=sys.stderr)
         return 1
 
-    b = int(rounds[0][1]["b"])
-    komi = float(rounds[0][1]["komi"])
-    assert all(int(r[1]["b"]) == b for r in rounds), "mixed board sizes"
-    caches = [r[1] for r in rounds]
-    sels = [r[2] for r in rounds]
-    rows = sum(len(s) for s in sels)
+    # group by (board size, komi): a batch has one token width, so a step
+    # is one micro-batch per size and they interleave inside the step
+    groups = {}
+    for lab, c, sel, _g in rounds:
+        groups.setdefault((int(c["b"]), float(c["komi"])), []).append(
+            (lab, c, sel))
+    rows = sum(len(s) for s in (r[2] for r in rounds))
     games = sum(r[3] for r in rounds)
     steps = max(1, -(-rows * 8 * args.epochs // args.batch))
     if args.max_steps:
         steps = min(steps, args.max_steps)
+    # per-size row counts, and how many rows of each size one step takes:
+    # keep the TOKENS per step constant, so a 15x15 micro-batch is small in
+    # rows but the same cost as the 9x9 one
+    share = {}
+    for k, gs in groups.items():
+        share[k] = sum(len(s) for _l, _c, s in gs) / max(rows, 1)
+    per_step = {}
+    for k in groups:
+        b_k = k[0]
+        per_step[k] = max(1, int(round(share[k] * args.batch * 81
+                                       / (b_k * b_k))))
     print(f"train: {games} games over {len(rounds)} round(s), {rows} rows, "
-          f"steps={steps} (8x D4, batch {args.batch})", flush=True)
+          f"steps={steps} (8x D4, {args.batch} 9x9-equivalent rows/step)",
+          flush=True)
+    for k in sorted(groups):
+        print(f"  {k[0]}x{k[0]} komi {k[1]}: {len(groups[k])} round(s), "
+              f"{int(share[k] * rows)} rows ({100 * share[k]:.0f}%), "
+              f"{per_step[k]} rows/step", flush=True)
 
     if args.base_ckpt and Path(args.base_ckpt).exists():
         dev = resolve_device(args.device)   # returns a device STRING
@@ -133,14 +150,24 @@ def main() -> int:
               f"params)", flush=True)
 
     rng = np.random.default_rng(args.seed)
-    batch = rowcache.alloc_batch(args.batch, b)
+    bufs = {k: rowcache.alloc_batch(per_step[k], k[0]) for k in groups}
     history = []
     for step in range(steps):
-        picks = rowcache.draw(args.batch, sels, rng)
-        n = rowcache.fill_batch(caches, picks, int(rng.integers(0, 8)),
-                                batch, b, komi)
-        m = trainer.train_step(tensors_to_torch(
-            {k: v[:n] for k, v in batch.items()}, trainer.device))
+        chunks = []
+        for k, gs in groups.items():
+            caches_k = [c for _l, c, _s in gs]
+            sels_k = [s for _l, _c, s in gs]
+            n_k = per_step[k]
+            picks = rowcache.draw(n_k, sels_k, rng)
+            buf = bufs[k]
+            n = rowcache.fill_batch(caches_k, picks, int(rng.integers(0, 8)),
+                                    buf, k[0], k[1])
+            if n:
+                chunks.append(tensors_to_torch(
+                    {kk: v[:n] for kk, v in buf.items()}, trainer.device))
+        if not chunks:
+            break
+        m = trainer.train_step_multi(chunks)
         history.append(m)
         if args.save_every and (step + 1) % args.save_every == 0:
             trainer.save(Path(args.out).with_suffix(".ck.pt"))

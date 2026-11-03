@@ -211,17 +211,28 @@ class Trainer:
         micro-sized chunks (grad accumulation) — one opt.step at the
         end; metric scalars are sample-weighted means over the chunks."""
         n = batch["tokens"].shape[0]
-        starts = list(range(0, n, micro or n))
+        chunks = [{k: v[s:s + (micro or n)] for k, v in batch.items()}
+                  for s in range(0, n, micro or n)]
+        return self.train_step_multi(chunks)
+
+    def train_step_multi(self, chunks: List[Dict[str, torch.Tensor]]
+                         ) -> Dict[str, float]:
+        """One optimizer step over several micro-batches that need NOT
+        share a shape (mixed board sizes interleave here).
+
+        A step's gradient is the row-weighted mean over the chunks, so the
+        result is the same as one batch of all of them concatenated had the
+        tokens been the same width; each chunk still gets its own compiled
+        graph. One opt.step at the end."""
+        rows = sum(c["tokens"].shape[0] for c in chunks)
         self.opt.zero_grad(set_to_none=True)
         if self.opt_adam is not None:
             self.opt_adam.zero_grad(set_to_none=True)
         acc = None
-        for s in starts:
-            e = s + (micro or n)
-            sub = {k: v[s:e] for k, v in batch.items()}
-            loss, sc = self._losses(sub)
-            (loss / len(starts)).backward()   # backward OUTSIDE autocast
+        for sub in chunks:
             w = sub["tokens"].shape[0]
+            loss, sc = self._losses(sub)
+            (loss * (w / rows)).backward()    # backward OUTSIDE autocast
             if acc is None:
                 acc = {k: v * w for k, v in sc.items()}
             else:
@@ -234,7 +245,7 @@ class Trainer:
         if self.opt_adam is not None:
             self.opt_adam.step()
         self.steps += 1
-        return {k: (v / n).item() for k, v in acc.items()}
+        return {k: (v / rows).item() for k, v in acc.items()}
 
     # --- eval without training ------------------------------------------
 
