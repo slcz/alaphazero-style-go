@@ -137,6 +137,22 @@ void puct_zone_set_buffers(int bank, float *planes, uint8_t *mask,
 void   puct_set_score_utility(double w);
 double puct_score_utility(void);
 
+/* What a backed-up value means. MIXED (default) is win/loss plus the
+ * weighted static score term; SCORE drops win/loss entirely and uses the
+ * margin alone, rescaled to the same range so the RPO temperature and the
+ * Q scale keep working. A driver switches a game to SCORE once the result
+ * is settled, so the rest is finished for points (clean endgames, clean
+ * ownership/score labels). Per game; reset()/reconfig() restore MIXED. */
+enum { PUCT_UTIL_MIXED = 0, PUCT_UTIL_SCORE = 1 };
+void puct_set_utility_mode(PuctGame *g, int mode);
+int  puct_utility_mode(const PuctGame *g);
+
+/* Drop the search tree at the current position (state, walkers and the
+ * node block stay). Switching utility mode mid-game requires this: every
+ * stored Q is in the old units, so the tree has to be rebuilt or the old
+ * values dominate for hundreds of visits. */
+void puct_clear_tree(PuctGame *g);
+
 /* Move → policy slot: the board point, or b*b for pass. */
 int  go_policy_slot(const State *s, Move m);
 

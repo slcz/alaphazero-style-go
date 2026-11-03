@@ -9,10 +9,14 @@
 # so the loop skips the upload and the Mac pulls the artifacts instead
 # (scripts/hf_push_from_node.py). Set to 1 on a box with HF access.
 export HF_PUSH=0
-# Static score utility in the MCTS backup (puct.c default 0.10). Raised to
-# 0.3 from it008 so an endgame capture (+2 points) moves utility by 0.033
-# instead of 0.011 — see the endgame_report numbers in TRAINING_LOOP.md.
-export GO_SCORE_UTILITY=0.3
+# Two-phase search: play purely for win/loss, then finish for points.
+#   GO_SCORE_UTILITY=0    -> the early game backs up win/loss only
+#   GO_SCORE_ONLY_V=0.95  -> once |value| >= 0.95 the result is settled, so
+#                            the driver drops win/loss, clears the tree and
+#                            finishes the game on the margin alone (clean
+#                            endgames -> clean ownership/score labels)
+export GO_SCORE_UTILITY=0.0
+export GO_SCORE_ONLY_V=0.95
 # --buffer-keep 0: train on the new round only (no history replay).
 # Set it to 1/3 to bring back the decaying buffer.
 cd /workspace/go || exit 1
@@ -38,7 +42,7 @@ while true; do
         --sample-plys 10 --max-plys 250 \
         --epochs 1 --batch 3072 --lr 0.01 \
         --buffer-keep 0 \
-        --score-utility 0.3 \
+        --score-utility 0.0 \
         --gate-games 400 --gate-sims 200 \
         --device cuda --seed 1 \
         >> "$WORK/loop.out" 2>&1

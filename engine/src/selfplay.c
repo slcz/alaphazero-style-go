@@ -37,6 +37,7 @@
  * killed run leaves a truncated last record the reader drops.
  */
 #define _POSIX_C_SOURCE 200809L
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -70,6 +71,11 @@ typedef struct Slot {
 
 static Slot   *slots;
 static int     max_plys;
+/* Switch a game to score-only utility once win/loss confidence is certain:
+ * the value saturates there, so its per-move noise swamps a 2-point gain
+ * and the engine would leave dead stones on the board. 0 disables. */
+static double score_only_v = 0.95;
+static uint32_t n_score_only;      /* games that switched mid-game */
 
 static void *xmalloc(size_t n) {
     void *p = malloc(n);
@@ -245,6 +251,14 @@ int main(int argc, char **argv) {
             double wsum;
             puct_root_stats(g, &root_visits, &wsum);
             double outlook = root_visits ? -(wsum / root_visits) : 0.0;
+            /* |utility| >= 0.95 + w means the win/loss part alone is at
+             * least 0.95 (the score term cannot exceed +-w): the result is
+             * settled, so finish the game for points instead. */
+            /* decided? act on it after this ply is recorded and played, so
+             * pi-bar and the stored target still come from this search */
+            int settled = score_only_v > 0.0 &&
+                fabs(outlook) >= score_only_v + puct_score_utility() &&
+                puct_utility_mode(g) != PUCT_UTIL_SCORE;
             {
                 double dmean;
                 uint32_t dmax;
@@ -276,6 +290,17 @@ int main(int argc, char **argv) {
             if (puct_play(g, mv) != 0) {
                 fprintf(stderr, "selfplay: puct_play failed\n");
                 return 1;
+            }
+            if (settled) {
+                /* Every stored Q is in win/loss units, so the tree goes
+                 * too — a new scale averaged into hundreds of old visits
+                 * would just echo the old ranking. */
+                puct_set_utility_mode(g, PUCT_UTIL_SCORE);
+                puct_clear_tree(g);
+                n_score_only++;
+                printf("SWITCH idx=%u ply=%d outlook=%+.3f -> score-only\n",
+                       s->game_index, s->ply, outlook);
+                fflush(stdout);
             }
 
             float score;
@@ -339,10 +364,12 @@ int main(int argc, char **argv) {
     }
     printf("SUMMARY games=%u b=%d komi=%.1f sims=%d fast_sims=%d "
            "fast_p=%.2f pool=%d rows=%d elapsed=%.1fs rate=%.2f games/s "
-           "oom=%llu compact=%llu depth_mean=%.1f depth_max=%u\n",
+           "oom=%llu compact=%llu depth_mean=%.1f depth_max=%u "
+           "score_only=%u\n",
            finished, b, komi, sims, fast_sims, fast_p, pool, rows, dt,
            dt > 0 ? finished / dt : 0.0,
            (unsigned long long)oom, (unsigned long long)compact,
-           depth_thinks ? depth_sum / depth_thinks : 0.0, depth_max);
+           depth_thinks ? depth_sum / depth_thinks : 0.0, depth_max,
+           n_score_only);
     return 0;
 }

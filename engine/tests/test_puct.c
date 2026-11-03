@@ -137,6 +137,46 @@ static void test_leaf_score_utility(void) {
     puct_game_free(g);
 }
 
+static void test_score_only_mode_and_tree_reset(void) {
+    /* SCORE mode drops win/loss and uses the margin alone, scaled to the
+     * mixed range; clearing the tree must leave the state alone. */
+    puct_set_score_utility(0.10);
+    PuctGame *g = puct_game_new(0, 7, 9.5f, 400);
+    CHECK(puct_utility_mode(g) == PUCT_UTIL_MIXED);
+    puct_set_utility_mode(g, PUCT_UTIL_SCORE);
+    CHECK(puct_utility_mode(g) == PUCT_UTIL_SCORE);
+    puct_set_eval(eval_fixed_score, NULL);
+
+    puct_think(g, 64);
+    uint16_t mv[MAX_MOVES];
+    uint32_t vis[MAX_MOVES];
+    double q[MAX_MOVES];
+    int n = puct_root_children(g, mv, vis, q, NULL);
+    CHECK(n == 50);
+    double want = -((1.0 + 0.10) * tanh(14.0 / 14.0));   /* wdl ignored */
+    int leaves = 0;
+    for (int i = 0; i < n; i++)
+        if (vis[i] == 1) {
+            leaves++;
+            CHECK(near_d(q[i], want, 1e-6));
+        }
+    CHECK(leaves >= 1);
+
+    /* reset drops the tree but not the position */
+    puct_play(g, mv[0]);
+    int ply = puct_state(g)->ply;
+    puct_clear_tree(g);
+    CHECK(puct_state(g)->ply == ply);
+    CHECK(puct_root_children(g, mv, vis, q, NULL) == 0);
+    puct_think(g, 8);                    /* rebuilds from scratch */
+    CHECK(puct_root_children(g, mv, vis, q, NULL) >= 49);   /* 7x7 - 1 */
+
+    puct_game_reset(g);                  /* a new game is mixed again */
+    CHECK(puct_utility_mode(g) == PUCT_UTIL_MIXED);
+    CHECK(puct_state(g)->ply == 0);
+    puct_game_free(g);
+}
+
 static void test_policy_slot(void) {
     State s7, s9;
     go_state_init(&s7, 7, 9.5f, 150);
@@ -757,6 +797,7 @@ int main(int argc, char **argv) {
     test_wall_terminal();
     test_terminal_score_utility();
     test_leaf_score_utility();
+    test_score_only_mode_and_tree_reset();
     test_determinism();
     test_prior_pattern();
     test_slot_fuzz();

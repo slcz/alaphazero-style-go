@@ -114,6 +114,7 @@ struct PuctGame {
     PuctWalker *walkers;    /* parked idx fields are ground truth;
                                compaction remaps them */
     int        n_walkers;
+    uint8_t    util_mode;   /* PUCT_UTIL_* — see puct_set_utility_mode */
     bool       think_done; /* completed (awaiting the driver's play) or
                               never-thought; see puct_walk */
     bool       suspended;  /* skip in walks: the game waits on something
@@ -348,25 +349,47 @@ static double score_utility(double margin, int b) {
 
 /* Search utility of a value-head win/loss plus a score margin, both in
  * the mover's view. The score term is what stops a decided game from
- * looking uniform to the search. */
-static float utility(float wdl, double margin, int b) {
+ * looking uniform to the search.
+ *
+ * In SCORE mode win/loss is dropped and the margin alone decides, scaled
+ * up to the mixed mode's range so pi-bar's temperature keeps meaning the
+ * same thing. */
+static float utility(const PuctGame *g, float wdl, double margin, int b) {
     double w = score_utility_weight();
+    double s = score_utility(margin, b);
+    if (g->util_mode == PUCT_UTIL_SCORE)
+        return (float)((1.0 + w) * s);
     if (w <= 0.0)
         return wdl;
-    return (float)((double)wdl + w * score_utility(margin, b));
+    return (float)((double)wdl + w * s);
+}
+
+void puct_set_utility_mode(PuctGame *g, int mode) {
+    g->util_mode = (mode == PUCT_UTIL_SCORE) ? PUCT_UTIL_SCORE : PUCT_UTIL_MIXED;
+}
+
+int puct_utility_mode(const PuctGame *g) {
+    return g->util_mode;
+}
+
+static void game_fresh(PuctGame *g);
+
+void puct_clear_tree(PuctGame *g) {
+    game_fresh(g);
 }
 
 /* Terminal backup value, mover's view: the TT result plus the score term
  * from the exact margin, so terminals and net leaves share one scale. */
-static float terminal_value(const PuctNode *n, const State *st) {
+static float terminal_value(const PuctGame *g, const PuctNode *n,
+                            const State *st) {
     float wdl = (n->flags & PUCT_OUTC_WIN) ? 1.0f :
                 (n->flags & PUCT_OUTC_LOSS) ? -1.0f : 0.0f;
-    if (score_utility_weight() <= 0.0)
+    if (g->util_mode != PUCT_UTIL_SCORE && score_utility_weight() <= 0.0)
         return wdl;
     float score = 0.0f;
     state_termination(st, &score, NULL);      /* black view */
     double margin = (st->side == BLACK) ? score : -score;
-    return utility(wdl, margin, st->b);
+    return utility(g, wdl, margin, st->b);
 }
 
 static double prior_of_q(uint16_t q) {   /* prior_q decode */
@@ -608,6 +631,7 @@ PuctGame *puct_game_new(size_t block_bytes, int b, float komi, int maxply) {
     g->b = (uint8_t)b;
     g->komi = komi;
     g->maxply = (uint16_t)maxply;
+    g->util_mode = PUCT_UTIL_MIXED;
     go_state_init(&g->state, b, komi, maxply);
     game_fresh(g);   /* walkers stay NULL until set (or defaulted in walk) */
     return g;
@@ -624,6 +648,7 @@ void puct_game_free(PuctGame *g) {
 /* Fresh empty-board game in place under the SAME config (see game_fresh). */
 void puct_game_reset(PuctGame *g) {
     go_state_init(&g->state, g->b, g->komi, g->maxply);
+    g->util_mode = PUCT_UTIL_MIXED;     /* a new game starts mixed */
     game_fresh(g);
 }
 
@@ -635,6 +660,7 @@ int puct_game_reconfig(PuctGame *g, int b, float komi, int maxply) {
     g->b = (uint8_t)b;
     g->komi = komi;
     g->maxply = (uint16_t)maxply;
+    g->util_mode = PUCT_UTIL_MIXED;
     go_state_init(&g->state, b, komi, maxply);
     game_fresh(g);
     return 0;
@@ -772,7 +798,7 @@ static bool walker_step(PuctGame *g, PuctWalker *w) {
         state_termination(&w->st, NULL, NULL) != TERM_PLAYING) {
         if (!(n->flags & PUCT_TERMINAL))
             set_terminal(n, &w->st);
-        backup(g, w->idx, terminal_value(n, &w->st));
+        backup(g, w->idx, terminal_value(g, n, &w->st));
         g->parks++;
         g->terminal_hits++;
         g->sims_done++;
@@ -828,7 +854,7 @@ static void walker_deliver(PuctGame *g, PuctWalker *w) {
     if (w->idx != g->root) {
         const float *wd = Z.banks[b].wdl + (size_t)off * 2;
         float sc = Z.banks[b].score[off];
-        backup(g, w->idx, utility(wd[0] - wd[1], sc, g->b));
+        backup(g, w->idx, utility(g, wd[0] - wd[1], sc, g->b));
         g->sims_done++;
     }
     w->row = -1;
