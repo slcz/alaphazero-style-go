@@ -12,6 +12,7 @@ layout is identical to the node-side path.
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
@@ -46,10 +47,13 @@ def main() -> int:
     ap.add_argument("it", type=int)
     ap.add_argument("--skip-shard", action="store_true",
                     help="skip the games shard (323 MB) if bandwidth-bound")
+    ap.add_argument("--dir", default=None,
+                    help="reuse a previous pull instead of fetching again")
     args = ap.parse_args()
     itd = f"{ROOT}/it{args.it:03d}"
 
-    tmp = Path(tempfile.mkdtemp(prefix=f"go-pull-{args.it:03d}-"))
+    tmp = Path(args.dir) if args.dir else Path(
+        tempfile.mkdtemp(prefix=f"go-pull-{args.it:03d}-"))
     shadow = tmp / f"it{args.it:03d}"
     print(f"pulling it{args.it:03d} from {ROOT}", flush=True)
 
@@ -69,10 +73,20 @@ def main() -> int:
     if not (shadow / "train.pt").exists():
         print("no checkpoint pulled; aborting", file=sys.stderr)
         return 1
+    # huggingface_hub >= 1.x stages LFS uploads through xet, which wants a
+    # writable ~/.cache/huggingface/xet — keep both the cache and the
+    # workspace-local and fall back to plain LFS if xet is unavailable.
+    env = dict(os.environ, HF_HUB_DISABLE_XET="1",
+               HF_HOME=str(REPO / ".hf-cache"))
     rc = subprocess.run([sys.executable,
                          str(REPO / "scripts" / "hf_push_iter.py"),
-                         str(args.it), "--root", str(tmp)]).returncode
-    shutil.rmtree(tmp, ignore_errors=True)
+                         str(args.it), "--root", str(tmp)], env=env).returncode
+    if rc == 0:
+        shutil.rmtree(tmp, ignore_errors=True)
+    else:
+        print(f"upload failed — the pulled copy is kept at {tmp}\n"
+              f"  retry with: python3 scripts/hf_push_from_node.py "
+              f"{args.it} --dir {tmp}")
     return rc
 
 

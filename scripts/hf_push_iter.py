@@ -15,6 +15,8 @@ Dataset repo (chriszhang01/go-selfplay @ 9x9/):
 The summary carries the train loss start/end, the head metrics and the
 gate result; the SGF pack is one file per match game.
 """
+from __future__ import annotations
+
 import argparse
 import json
 import sys
