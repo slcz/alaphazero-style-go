@@ -12,7 +12,7 @@ export HF_PUSH=0
 # --buffer-keep 0: train on the new round only (no history replay).
 # Set it to 1/3 to bring back the decaying buffer.
 cd /workspace/go || exit 1
-export PUCT_WALKERS=4 PUCT_TASKS=12 NN_B=9 NN_BF16=1 NN_COMPILE=1
+export PUCT_WALKERS=4 PUCT_TASKS=6 NN_B=9 NN_BF16=1 NN_COMPILE=1
 # Search utility = lambda * win/loss + (1 - lambda) * tanh(margin / 2b):
 # at 0.5 the search values a point of expected result and a point of margin
 # equally, which is what teaches the net to score the board and to stop

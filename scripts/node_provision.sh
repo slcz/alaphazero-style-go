@@ -51,6 +51,7 @@ if [ -z "$SKIP_PIP" ]; then
 fi
 
 say "5/5 restore checkpoint + loop.jsonl"
+scripts/salad.sh ssh 'mkdir -p /workspace/go-run-9x9'
 scripts/salad.sh put "$CKPT" /workspace/go-run-9x9/best.pt >/dev/null 2>&1
 scripts/salad.sh ssh "cd /workspace/go && python3 -c \"
 import json, pathlib

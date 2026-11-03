@@ -6,7 +6,7 @@ set -x
 python3 -m pip install --break-system-packages --quiet --timeout 60 \
     --retries 5 --index-url https://download.pytorch.org/whl/cu128 torch
 python3 -m pip install --break-system-packages --quiet --timeout 60 \
-    --retries 5 huggingface_hub pytest
+    --retries 5 huggingface_hub pytest sgfmill
 python3 -c "import torch; print('torch', torch.__version__,
   'cuda', torch.cuda.is_available(),
   'muon', hasattr(torch.optim, 'Muon'))" > /tmp/pip.result 2>&1
