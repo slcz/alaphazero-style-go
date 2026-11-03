@@ -410,6 +410,9 @@ void puct_zone_init(int max_rows) {
     const char *lenv = getenv("GO_UTIL_LAMBDA");
     if (lenv && *lenv)
         puct_set_utility_lambda(atof(lenv));
+    const char *tenv = getenv("GO_ROOT_TEMP");
+    if (tenv && *tenv)
+        puct_set_root_temp(atof(tenv));
     if (!Z.eval)
         Z.eval = dummy_eval;
     pthread_mutex_init(&Z.mu, NULL);
@@ -649,6 +652,20 @@ typedef double v4d __attribute__((vector_size(32)));   /* gcc and clang */
 static int node_pi_bar(const PuctGame *g, const PuctNode *r,
                        uint16_t *moves, float *pi, int cap);
 
+/* Root exploration temperature: flattens the ROOT descent distribution
+ * only, so the search looks wider at the top of the tree while the moves
+ * actually played (argmax of pi-bar) and the recorded target stay sharp.
+ * 1.0 = off. GO_ROOT_TEMP overrides. */
+static double g_root_temp = 1.0;
+
+void puct_set_root_temp(double t) {
+    g_root_temp = t < 1.0 ? 1.0 : t;
+}
+
+double puct_root_temp(void) {
+    return g_root_temp;
+}
+
 /* SEARCH (Grill et al. 2020): the descending move is sampled from
  * pi-bar — no deterministic PUCT path, no root noise. Returns the
  * sampled EDGE index into n's child array. */
@@ -663,7 +680,8 @@ static uint32_t select_child(PuctGame *g, const PuctNode *n) {
     double w[MAX_MOVES];
     for (int i = 0; i < m; i++)
         w[i] = (double)pi[i];
-    return (uint32_t)sample_index_stream(&g->rng, w, m, 1.0);
+    double temp = (n == node_at_c(g, g->root)) ? g_root_temp : 1.0;
+    return (uint32_t)sample_index_stream(&g->rng, w, m, temp);
 }
 
 /* Fill the parked leaf's real priors: softmax over the row's logp at

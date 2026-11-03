@@ -104,6 +104,12 @@ void      puct_set_eval(PuctEvalFn fn, void *ctx);   /* the one evaluator */
 void   puct_set_utility_lambda(double l);
 double puct_utility_lambda(void);
 
+/* Flatten the ROOT descent sampling to pi-bar^(1/t) (t >= 1; 1 = off).
+ * Exploration without touching the moves played or the recorded target.
+ * GO_ROOT_TEMP overrides. */
+void   puct_set_root_temp(double t);
+double puct_root_temp(void);
+
 /* Suspend: puct_think / puct_mux_step treat the game as idle (returning
  * done) until resumed — for games waiting on something outside the
  * search. Never suspend a game with rows in flight. */
