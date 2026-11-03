@@ -106,8 +106,10 @@ double puct_utility_lambda(void);
 
 
 /* Dirichlet noise mixed into the ROOT priors once per root:
- * p <- (1-eps) p + eps Dir(alpha). eps = 0 disables. Selfplay-only. */
-void   puct_set_root_noise(double eps, double alpha);
+ * p <- (1-eps) p + eps Dir(total/n_moves) — KataGo's total-concentration
+ * convention (10.83, weight 0.25), so the setting is board-size free.
+ * eps = 0 disables. Selfplay-only. */
+void   puct_set_root_noise(double eps, double total);
 double puct_root_noise_eps(void);
 
 /* Suspend: puct_think / puct_mux_step treat the game as idle (returning

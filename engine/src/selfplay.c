@@ -175,11 +175,14 @@ int main(int argc, char **argv) {
     }
 
     go_init();
-    /* root Dirichlet noise: also selfplay-only, same reasoning */
+    /* root Dirichlet noise: also selfplay-only, same reasoning. The
+     * concentration is TOTAL over the legal moves (KataGo 10.83), so it
+     * means the same thing at every board size. */
     const char *nenv = getenv("GO_ROOT_NOISE_EPS");
     if (nenv && *nenv) {
-        const char *aenv = getenv("GO_ROOT_NOISE_ALPHA");
-        puct_set_root_noise(atof(nenv), aenv && *aenv ? atof(aenv) : 0.3);
+        const char *tenv2 = getenv("GO_ROOT_NOISE_TOTAL");
+        puct_set_root_noise(atof(nenv),
+                            tenv2 && *tenv2 ? atof(tenv2) : 10.83);
     }
     rng_seed(seed);
     PuctGame **handles = xmalloc((size_t)pool * sizeof *handles);

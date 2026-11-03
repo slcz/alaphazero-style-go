@@ -23,7 +23,9 @@ export GO_UTIL_LAMBDA=0.8
 # change for the next round — lambda stays 0.8 and the buffer stays fresh,
 # so a diff against the previous round is attributable to exploration.
 export GO_ROOT_NOISE_EPS=0.25
-export GO_ROOT_NOISE_ALPHA=0.3
+# TOTAL concentration over the move list, KataGo's 10.83 — per move that is
+# ~0.13 on 9x9 (~0.03 on 19x19), so the same number works at every size.
+export GO_ROOT_NOISE_TOTAL=10.83
 export NN_WAVE_STATS=1          # wave fill telemetry -> loop.out
 WORK=/workspace/go-run-9x9
 mkdir -p "$WORK"

@@ -684,15 +684,17 @@ static double rng_gamma(uint64_t *st, double alpha) {
     }
 }
 
-/* Dirichlet noise mixed into the ROOT priors: Symmetric alphaZero-style
- * exploration. eps = 0 disables. Selfplay-only, like the root
- * temperature. */
-static double g_noise_eps = 0.0, g_noise_alpha = 0.3;
+/* Dirichlet noise mixed into the ROOT priors: alphaZero-style exploration,
+ * using KataGo's convention of a TOTAL concentration spread over the legal
+ * moves (rootDirichletNoiseTotalConcentration = 10.83, weight 0.25). Per
+ * move that is ~0.03 on 19x19 and ~0.13 on 9x9, so the same setting means
+ * the same thing at every board size. eps = 0 disables. Selfplay-only. */
+static double g_noise_eps = 0.0, g_noise_total = 10.83;
 
-void puct_set_root_noise(double eps, double alpha) {
+void puct_set_root_noise(double eps, double total) {
     g_noise_eps = eps < 0.0 ? 0.0 : eps > 1.0 ? 1.0 : eps;
-    if (alpha > 0.0)
-        g_noise_alpha = alpha;
+    if (total > 0.0)
+        g_noise_total = total;
 }
 
 double puct_root_noise_eps(void) { return g_noise_eps; }
@@ -725,8 +727,9 @@ static void noise_priors(PuctGame *g, PuctNode *n) {
     PuctEdge *E = kids_of(g, n);
     int nc = (int)n->n_children;
     double x[MAX_MOVES], sum = 0.0;
+    double alpha = g_noise_total / (double)nc;   /* per-move */
     for (int i = 0; i < nc; i++) {
-        x[i] = rng_gamma(&g->rng, g_noise_alpha);
+        x[i] = rng_gamma(&g->rng, alpha);
         sum += x[i];
     }
     if (!(sum > 0.0))

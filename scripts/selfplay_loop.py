@@ -415,9 +415,9 @@ def main() -> int:
                               float(os.environ.get("GO_UTIL_LAMBDA", 0.5)),
                           "root_noise":
                               float(os.environ.get("GO_ROOT_NOISE_EPS", 0.0)),
-                          "root_noise_alpha":
-                              float(os.environ.get("GO_ROOT_NOISE_ALPHA",
-                                                   0.3))}}
+                          "root_noise_total":
+                              float(os.environ.get("GO_ROOT_NOISE_TOTAL",
+                                                   10.83))}}
         # durability first: the checkpoint/summary/SGFs/shard leave the
         # node (gen0 aliases it001's net), THEN the iteration is recorded —
         # a crash in between re-runs the push-free path on restart
