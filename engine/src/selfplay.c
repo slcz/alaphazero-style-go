@@ -181,6 +181,12 @@ int main(int argc, char **argv) {
     const char *tenv = getenv("GO_ROOT_TEMP");
     if (tenv && *tenv)
         puct_set_root_temp(atof(tenv));
+    /* root Dirichlet noise: also selfplay-only, same reasoning */
+    const char *nenv = getenv("GO_ROOT_NOISE_EPS");
+    if (nenv && *nenv) {
+        const char *aenv = getenv("GO_ROOT_NOISE_ALPHA");
+        puct_set_root_noise(atof(nenv), aenv && *aenv ? atof(aenv) : 0.3);
+    }
     rng_seed(seed);
     PuctGame **handles = xmalloc((size_t)pool * sizeof *handles);
     if (puct_mux_new(pool, (size_t)block_mb << 20, b, komi, max_plys,
