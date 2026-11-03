@@ -13,11 +13,12 @@ export HF_PUSH=0
 # Set it to 1/3 to bring back the decaying buffer.
 cd /workspace/go || exit 1
 export PUCT_WALKERS=4 PUCT_TASKS=6 NN_B=9 NN_BF16=1 NN_COMPILE=1
-# Search utility = lambda * win/loss + (1 - lambda) * tanh(margin / 2b):
-# at 0.5 the search values a point of expected result and a point of margin
-# equally, which is what teaches the net to score the board and to stop
-# playing when the game is over instead of filling its own territory.
-export GO_UTIL_LAMBDA=0.5
+# Search utility = lambda * win/loss + (1 - lambda) * tanh(margin / 2b).
+# 0.5 gave games that ended with ~24 empty points and 11 of them dame; the
+# score half also biases against continuing, because a leaf's margin
+# estimate is shrunk toward zero while a terminal's is exact. 0.8 keeps the
+# counting pressure at 20% and lets win/loss steer termination again.
+export GO_UTIL_LAMBDA=0.8
 export NN_WAVE_STATS=1          # wave fill telemetry -> loop.out
 WORK=/workspace/go-run-9x9
 mkdir -p "$WORK"

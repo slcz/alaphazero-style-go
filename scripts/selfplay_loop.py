@@ -406,10 +406,13 @@ def main() -> int:
                "ckpt": str(ckpt.relative_to(work)),
                "ckpt_sha256": sha256(ckpt) if ckpt.exists() else None,
                "best_sha256": sha256(best)[:16],
-               "params": {k: getattr(args, k) for k in
-                          ("b", "komi", "sims", "fast_sims", "fast_p",
-                           "buffer_keep", "lr", "batch", "epochs",
-                           "gate_games")}}
+               "params": {**{k: getattr(args, k) for k in
+                             ("b", "komi", "sims", "fast_sims", "fast_p",
+                              "buffer_keep", "lr", "batch", "epochs",
+                              "gate_games")},
+                          # the search blend is environment, not an argv
+                          "util_lambda":
+                              float(os.environ.get("GO_UTIL_LAMBDA", 0.5))}}
         # durability first: the checkpoint/summary/SGFs/shard leave the
         # node (gen0 aliases it001's net), THEN the iteration is recorded —
         # a crash in between re-runs the push-free path on restart

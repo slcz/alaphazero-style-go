@@ -22,7 +22,7 @@
 # set from Sabaki's "Arguments" field:  gtp_mac.sh 1000
 set -e
 cd "${0%/*}/.."        # no dirname: Sabaki may spawn us with an empty PATH
-export PUCT_CKPT="${PUCT_CKPT:-$PWD/ckpts/it010.pt}"
+export PUCT_CKPT="${PUCT_CKPT:-$PWD/ckpts/it012.pt}"
 export GO_SIMS="${GO_SIMS:-2000}"
 # Sabaki "Arguments": a single number overrides GO_SIMS.
 if [[ "${1:-}" =~ ^[0-9]+$ ]]; then
