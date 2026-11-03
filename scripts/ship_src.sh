@@ -17,6 +17,8 @@ find . -type f \
     -not -path './engine/build/*' -not -path './build/*' \
     -not -path './gate_sgf_it001/*' -not -path './gen0_sgf/*' \
     -not -path './rand0_sgf/*' \
+    -not -path './t/*' -not -path './tmp/*' -not -path './.hf-cache/*' \
+    -not -path './.pushed/*' -not -name '*.spbin' -not -name '*.pt' \
     -not -name '*.pdf' -not -name 'fm_*.png' -not -name '.DS_Store' \
     -print | tar -czf "$OUT" -T -
 echo "$OUT: $(du -h "$OUT" | cut -f1), $(tar tzf "$OUT" | wc -l) files"
