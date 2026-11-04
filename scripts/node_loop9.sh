@@ -19,10 +19,9 @@ export PUCT_WALKERS=4 PUCT_TASKS=6 NN_B=9 NN_BF16=1 NN_COMPILE=1
 # estimate is shrunk toward zero while a terminal's is exact. 0.8 keeps the
 # counting pressure at 20% and lets win/loss steer termination again.
 export GO_UTIL_LAMBDA=0.8
-# Root Dirichlet noise (selfplay only, gate and GTP unaffected): the one
-# change for the next round — lambda stays 0.8 and the buffer stays fresh,
-# so a diff against the previous round is attributable to exploration.
-export GO_ROOT_NOISE_EPS=0.25
+# Root Dirichlet noise (selfplay only): OFF. it016 ran with eps 0.25 and
+# gated 0.5075, i.e. exploration was not what was limiting progress.
+export GO_ROOT_NOISE_EPS=0
 # TOTAL concentration over the move list, KataGo's 10.83 — per move that is
 # ~0.13 on 9x9 (~0.03 on 19x19), so the same number works at every size.
 export GO_ROOT_NOISE_TOTAL=10.83

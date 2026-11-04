@@ -343,6 +343,9 @@ def main() -> int:
     ap.add_argument("--buffer-keep", type=float, default=1 / 3,
                     help="fraction of an old round kept per iteration "
                          "(1/3 → 1, 1/3, 1/9 ... of successive rounds)")
+    ap.add_argument("--gate-min", type=float, default=0.52,
+                    help="promote only if the gate beats this; a 400-game "
+                         "match has SE ~0.025, so 0.50 means 'even'")
     ap.add_argument("--gate-games", type=int, default=400)
     ap.add_argument("--gate-sims", type=int, default=200)
     ap.add_argument("--gate-max-plys", type=int, default=200)
@@ -438,10 +441,15 @@ def main() -> int:
         else:
             log(f"it{it}: gating {ckpt.name} against best.pt (eval only)")
             score = gate(args, ckpt, best, eval_json)
-        shutil.copy(ckpt, work / "best.pt.next")
-        shutil.move(work / "best.pt.next", best)
-        log(f"it{it}: gate {'FAILED' if score is None else f'{score:.3f}'}"
-            f" -> promoted latest checkpoint")
+        # a match inside the noise band is not evidence of improvement:
+        # keep the previous base so a coin flip cannot become the teacher
+        promote = score is not None and score >= args.gate_min
+        if promote:
+            shutil.copy(ckpt, work / "best.pt.next")
+            shutil.move(work / "best.pt.next", best)
+        log(f"it{it}: gate {'FAILED' if score is None else f'{score:.3f}'} "
+            f"(bar {args.gate_min:.2f}) -> "
+            f"{'promoted' if promote else 'NOT promoted, base kept'}")
 
         rec = {"iteration": it, "games": games, "epochs": args.epochs,
                "gate_score": score,
