@@ -249,7 +249,14 @@ def size_plans(args):
         komi = 9.5 if b == 7 else 7.5
         rows = max(64, int(round(args.rows * 81.0 / (b * b))))
         block = max(2, int(round(args.block_mb * b * b / 81.0)))
-        pool = min(args.pool, max(64, (12 * 1024) // block))
+        # A bank ships at the round boundary, and a round parks roughly one
+        # row per live game, so a bank of `rows` only fills if
+        # rows = k * pool; otherwise it ships at ~pool rows and the rest of
+        # the compiled width is padding (11x11: 2048/2742 = 75 %, 13x13:
+        # 1536/1963 = 78 %, both measured). Fixing the pool instead of rows
+        # keeps the full token budget per wave.
+        pool = max(64, rows // 2)
+        pool = min(args.pool, pool, max(64, (12 * 1024) // block))
         maxply = args.max_plys if b <= 11 else args.max_plys + 50
         out.append((b, games, komi, rows, block, pool, maxply))
     return out
