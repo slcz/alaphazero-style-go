@@ -1,19 +1,28 @@
-# resume state (2026-11-04 morning)
+# resume state (2026-11-04, after it019)
 
-Node: 180.189.55.43:52591, work dir /workspace/go-run-9x9
-Stopped after it018 (stopat18 watchdog); it018 records ~06:15 UTC.
+Node: 180.189.55.41:15594, work dir /workspace/go-run-9x9
+it019 (mixed 9/11/13/15) runs until it records (~19:05 UTC); the stopat19
+watchdog then kills the supervisor, loop and engine and drops it020.
 
-## what is on disk
-- best.pt = it017 (3795715ef233) unless it018 gates >= 0.52
-- it011..it018 shards + checkpoints; HF has through it017 (watcher)
-- mixed plan live: --sizes 9:15000,11:5000,13:5000,15:5000, lambda 0.8, noise off
+## next round is already configured: PLAIN 9x9, 30 000 games
+node_loop9.sh has no --sizes line any more, so `--games 30000 --b 9` applies:
+~60 min generation, ~10 min train, ~4 min gate. Same utility as it019:
+  GO_UTIL_LAMBDA=1.0, GO_SWITCH_V=0.95   (win/loss first, then pure score)
+  GO_ROOT_NOISE_EPS=0  (root noise did nothing: it016 gated 0.5075)
+  --buffer-keep 0      (fresh round only)
+  gate: lambda 1.0 fixed, 400 games, promote bar 0.52
 
-## resume
-    bash /workspace/go/scripts/node_run9x9_tmux.sh
-resumes at it019. The supervisor starts a NEW selfplay_loop process, so the
-pool fix (pool = rows/2 -> fills the compiled wave instead of padding 22%)
-takes effect. Expect plans: rows/pool 4096/2048, 2742/1371, 1963/981, 1475/737.
+    bash /workspace/go/scripts/node_run9x9_tmux.sh      # resumes at it020
 
-## numbers so far (9x9 gate vs previous base)
-it013 0.650 | it014 0.603 | it015 0.603 | it016 0.5075 (noise, rejected)
-it017 0.570 (mixed sizes, promoted) -- 811k rows, 34% more than 9x9-only
+## why the 9x9 round
+The mixed rounds plateaued (it017 0.570, it018 0.568) and the two-phase
+switch showed no change in endgame settlement (41 % of games still end with
+a group in atari, same as it018). Measured on it019's 9x9 games: dead stones
+usually cancel (11 % both sides), mean |score change| from a cleanup sweep
+1.8 points, median 0. A plain 9x9 round is ~6x faster than the mixed round,
+so it is the cheap way to see whether more iterations fix pass valuation
+and improve the ownership/score labels.
+
+## history (9x9 gate, vs the previous base)
+it012 0.735 | it013 0.650 | it014 0.603 | it015 0.603 | it016 0.5075 (noise,
+rejected) | it017 0.570 (mixed) | it018 0.568 (mixed) | it019 pending
