@@ -145,9 +145,14 @@ def main() -> int:
     lj = root / "loop.jsonl"
     if lj.exists():
         up(lj, "9x9/loop.jsonl", model_repo, "model")
-    shard = itd / "selfplay" / "shard-0.spbin"
-    if shard.exists():
-        up(shard, f"9x9/it{it:03d}/shard-0.spbin", data_repo, "dataset")
+    # one unit dir per board size when the round mixes sizes
+    shards = ([itd / "selfplay" / "shard-0.spbin"]
+              if (itd / "selfplay" / "shard-0.spbin").exists()
+              else sorted(itd.glob("sp*/shard-0.spbin")))
+    for shard in shards:
+        if shard.exists():
+            up(shard, f"9x9/it{it:03d}/{shard.parent.name}/shard-0.spbin",
+               data_repo, "dataset")
     print("done")
     return 0
 

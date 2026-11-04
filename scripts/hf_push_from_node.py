@@ -42,6 +42,15 @@ def run(remote_cmd: str) -> bool:
     return r.returncode == 0
 
 
+def remote_units(itd: str):
+    """Unit dirs of a finished iteration: 'selfplay' or one spB per size."""
+    r = subprocess.run([str(SALAD), "ssh", f"ls {itd}"],
+                       capture_output=True, text=True)
+    units = [x for x in r.stdout.split()
+             if x == "selfplay" or (x.startswith("sp") and x[2:].isdigit())]
+    return units or ["selfplay"]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("it", type=int)
@@ -61,8 +70,13 @@ def main() -> int:
     for name in ("train.pt", "train.json", "eval.json", "train.log"):
         got[name] = get(f"{itd}/{name}", shadow / name)
     if not args.skip_shard:
-        got["shard"] = get(f"{itd}/selfplay/shard-0.spbin",
-                           shadow / "selfplay" / "shard-0.spbin")
+        # one unit dir per board size when the round mixes sizes
+        units = remote_units(itd)
+        got["shards"] = []
+        for u in units:
+            p = get(f"{itd}/{u}/shard-0.spbin", shadow / u / "shard-0.spbin")
+            if p:
+                got["shards"].append(u)
     # gate SGFs: tar on the node first (one round trip), then a single scp
     tgz_remote = f"{itd}/gate-sgf.tgz"
     if run(f"tar -czf {tgz_remote} -C {itd} gate-sgf"):
