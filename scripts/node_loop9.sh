@@ -41,6 +41,7 @@ while true; do
         --b 9 --komi 7.5 \
         --forever \
         --games 30000 \
+        --sizes 9:15000,11:5000,13:5000,15:5000 \
         --sims 200 --fast-sims 40 --fast-p 0.75 \
         --pool 2048 --rows 4096 \
         --sample-plys 10 --max-plys 250 \

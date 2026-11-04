@@ -27,6 +27,7 @@ import random
 import shutil
 import subprocess
 import sys
+import zlib
 import threading
 import time
 from pathlib import Path
@@ -127,7 +128,9 @@ def update_buffer(work: Path, it: int, keep: float, seed: int) -> dict:
            "rounds": []}
     newest = max((n for _r, n, _p in rounds), default=0)
     for r, n, rel in rounds:
-        rng = random.Random(seed * 7919 + r * 4096 + len(rel) + hash(rel) % 97)
+        # stable across processes: builtin hash() is salted per run, which
+        # would make a resumed round select a different subset
+        rng = random.Random(seed * 7919 + r * 4096 + zlib.crc32(rel.encode()))
         p = keep ** (it - r)
         games = [g for g in range(n) if rng.random() < p]
         if len(games) < 0.005 * newest:      # < 0.5% of the draw: drop the
@@ -260,11 +263,11 @@ def unit_of(d: Path, args, b: int) -> Path:
 
 def generate(args, best: Path, unit_dir: Path, seed: int, b: int,
              komi: float, rows: int, block_mb: int, pool: int,
-             max_plys: int) -> int:
+             max_plys: int, games: int) -> int:
     # NN_B turns on the FP8 static-wave inference path (one graph per
     # board size; see go_ai/net/nn_worker.py setup()).
     env = dict(os.environ, NN_B=str(b), NN_BF16="1", NN_COMPILE="1")
-    cmd = [str(SELFPLAY), str(best), str(unit_dir), str(args.games),
+    cmd = [str(SELFPLAY), str(best), str(unit_dir), str(games),
            str(b), str(komi), str(args.sims), str(pool),
            str(rows), str(args.sample_plys), str(max_plys),
            str(block_mb), args.device, str(seed), str(args.fast_sims),
@@ -416,7 +419,7 @@ def main() -> int:
                     log(f"it{it}: generating {ng} games at {b}x{b} "
                         f"(rows {rows}, block {block}MB, pool {pool})")
                     rc = generate(args, best, unit, args.seed + it, b, komi,
-                                  rows, block, pool, maxply)
+                                  rows, block, pool, maxply, ng)
                     if rc != 0:
                         return rc
                     log(f"it{it}: {b}x{b} generated {count_games(unit)} games")
