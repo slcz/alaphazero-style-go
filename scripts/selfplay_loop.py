@@ -234,6 +234,13 @@ def ensure_done(unit_dir: Path, seed: int) -> bool:
     return True
 
 
+def max_plys_for(b: int) -> int:
+    """Ply wall for a board: 2.5 x area. Scales with the board instead of a
+    flat cap, so a 19x19 game is not adjudicated where a 9x9 game would
+    only be half over."""
+    return max(60, int(round(2.5 * b * b)))
+
+
 def size_plans(args):
     """[(b, games, komi, rows, block_mb, pool, max_plys)] for this round.
 
@@ -242,7 +249,7 @@ def size_plans(args):
     RAM budget, so VRAM and memory do not move with the board size."""
     if not args.sizes:
         return [(args.b, args.games, args.komi, args.rows, args.block_mb,
-                 args.pool, args.max_plys)]
+                 args.pool, max_plys_for(args.b))]
     out = []
     for spec in args.sizes.split(","):
         b, games = (int(x) for x in spec.split(":"))
@@ -257,11 +264,7 @@ def size_plans(args):
         # keeps the full token budget per wave.
         pool = max(64, rows // 2)
         pool = min(args.pool, pool, max(64, (12 * 1024) // block))
-        # the wall has to clear the natural tail or the round is scored on
-        # unresolved boards: 15x15 natural p90 was 251 plies at it018 and
-        # 20 % of games hit a 300 wall, 13x13 14 %
-        maxply = args.max_plys if b <= 11 else args.max_plys + (100 if b == 13
-                                                              else 200)
+        maxply = max_plys_for(b)
         out.append((b, games, komi, rows, block, pool, maxply))
     return out
 

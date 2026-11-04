@@ -46,6 +46,8 @@ while true; do
         --sims 200 --fast-sims 40 --fast-p 0.75 \
         --pool 2048 --rows 4096 \
         --sample-plys 10 --max-plys 250 \
+        # NOTE: --max-plys is only a fallback; the wall is 2.5*b*b per size
+
         --epochs 1 --batch 3072 --lr 0.01 \
         --buffer-keep 0 \
         --gate-games 400 --gate-sims 200 \
