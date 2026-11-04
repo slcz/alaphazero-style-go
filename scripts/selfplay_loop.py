@@ -303,7 +303,11 @@ def gate(args, candidate: Path, best: Path, eval_json: Path) -> float | None:
     log_path = eval_json.with_suffix(".log")
     # opening diversity: sample ∝ visits for the first N plies (the
     # referee's 0-1 random moves alone would repeat openings)
-    env = dict(os.environ, PUCT_SAMPLE_PLYS=str(args.gate_sample_plys))
+    # the gate is a WIN/LOSS match: both engines play the pure
+    # result-oriented search regardless of the blend selfplay trains under,
+    # so the number answers "who wins", not "who wins by more"
+    env = dict(os.environ, PUCT_SAMPLE_PLYS=str(args.gate_sample_plys),
+               GO_UTIL_LAMBDA="1.0")
     cmd = [sys.executable, "scripts/gate_match.py",
            "--ckpt-a", str(candidate), "--ckpt-b", str(best),
            "--games", str(args.gate_games // 2),
@@ -482,7 +486,9 @@ def main() -> int:
                               float(os.environ.get("GO_ROOT_NOISE_EPS", 0.0)),
                           "root_noise_total":
                               float(os.environ.get("GO_ROOT_NOISE_TOTAL",
-                                                   10.83))}}
+                                                   10.83)),
+                          # fixed: the gate always plays pure win/loss
+                          "gate_lambda": 1.0}}
         # durability first: the checkpoint/summary/SGFs/shard leave the
         # node (gen0 aliases it001's net), THEN the iteration is recorded —
         # a crash in between re-runs the push-free path on restart
