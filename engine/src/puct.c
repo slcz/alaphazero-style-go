@@ -101,6 +101,7 @@ struct PuctGame {
     PuctWalker *walkers;    /* parked idx fields are ground truth;
                                compaction remaps them */
     int        n_walkers;
+    double     util_lambda;/* live utility blend for THIS game */
     bool       think_done; /* completed (awaiting the driver's play) or
                               never-thought; see puct_walk */
     bool       suspended;  /* skip in walks: the game waits on something
@@ -338,29 +339,44 @@ static double score_term(double margin, int b) {
  * mover's view and both in [-1,1]. With lambda = 0.5 the search trades a
  * point of expected result against a point of margin; at lambda = 1 it is
  * plain AlphaZero value. */
+/* Default blend a game starts with (GO_UTIL_LAMBDA). The live value is
+ * per game: the driver flips a decided game to pure score. */
 static double g_util_lambda = 0.5;
 
+static double clamp_lambda(double l) {
+    return l < 0.0 ? 0.0 : l > 1.0 ? 1.0 : l;
+}
+
 void puct_set_utility_lambda(double l) {
-    g_util_lambda = l < 0.0 ? 0.0 : l > 1.0 ? 1.0 : l;
+    g_util_lambda = clamp_lambda(l);
 }
 
 double puct_utility_lambda(void) {
     return g_util_lambda;
 }
 
-static float blend(float wdl, double margin, int b) {
-    return (float)(g_util_lambda * (double)wdl
-                   + (1.0 - g_util_lambda) * score_term(margin, b));
+void puct_set_game_lambda(PuctGame *g, double l) {
+    g->util_lambda = clamp_lambda(l);
+}
+
+double puct_game_lambda(const PuctGame *g) {
+    return g->util_lambda;
+}
+
+static float blend(double lam, float wdl, double margin, int b) {
+    return (float)(lam * (double)wdl
+                   + (1.0 - lam) * score_term(margin, b));
 }
 
 /* Terminal backup value, mover's view: the exact TT margin, blended. */
-static float terminal_value(const PuctNode *n, const State *st) {
+static float terminal_value(const PuctGame *g, const PuctNode *n,
+                            const State *st) {
     float wdl = (n->flags & PUCT_OUTC_WIN) ? 1.0f :
                 (n->flags & PUCT_OUTC_LOSS) ? -1.0f : 0.0f;
     float score = 0.0f;
     state_termination(st, &score, NULL);
     double margin = (st->side == BLACK) ? score : -score;
-    return blend(wdl, margin, st->b);
+    return blend(g->util_lambda, wdl, margin, st->b);
 }
 
 static double prior_of_q(uint16_t q) {   /* prior_q decode */
@@ -597,6 +613,7 @@ PuctGame *puct_game_new(size_t block_bytes, int b, float komi, int maxply) {
     g->b = (uint8_t)b;
     g->komi = komi;
     g->maxply = (uint16_t)maxply;
+    g->util_lambda = g_util_lambda;      /* born at the default blend */
     go_state_init(&g->state, b, komi, maxply);
     game_fresh(g);   /* walkers stay NULL until set (or defaulted in walk) */
     return g;
@@ -613,7 +630,12 @@ void puct_game_free(PuctGame *g) {
 /* Fresh empty-board game in place under the SAME config (see game_fresh). */
 void puct_game_reset(PuctGame *g) {
     go_state_init(&g->state, g->b, g->komi, g->maxply);
+    g->util_lambda = g_util_lambda;      /* a new game starts at the default */
     game_fresh(g);
+}
+
+void puct_clear_tree(PuctGame *g) {
+    game_fresh(g);                       /* tree only: state and lambda stay */
 }
 
 /* Replant under a new config (GTP boardsize); call with no walker in
@@ -624,6 +646,7 @@ int puct_game_reconfig(PuctGame *g, int b, float komi, int maxply) {
     g->b = (uint8_t)b;
     g->komi = komi;
     g->maxply = (uint16_t)maxply;
+    g->util_lambda = g_util_lambda;
     go_state_init(&g->state, b, komi, maxply);
     game_fresh(g);
     return 0;
@@ -839,7 +862,7 @@ static bool walker_step(PuctGame *g, PuctWalker *w) {
         state_termination(&w->st, NULL, NULL) != TERM_PLAYING) {
         if (!(n->flags & PUCT_TERMINAL))
             set_terminal(n, &w->st);
-        backup(g, w->idx, terminal_value(n, &w->st));
+        backup(g, w->idx, terminal_value(g, n, &w->st));
         g->parks++;
         g->terminal_hits++;
         g->sims_done++;
@@ -895,7 +918,8 @@ static void walker_deliver(PuctGame *g, PuctWalker *w) {
     if (w->idx != g->root) {
         const float *wd = Z.banks[b].wdl + (size_t)off * 2;
         backup(g, w->idx,
-               blend(wd[0] - wd[1], (double)Z.banks[b].score[off], g->b));
+               blend(g->util_lambda, wd[0] - wd[1],
+                     (double)Z.banks[b].score[off], g->b));
         g->sims_done++;
     }
     w->row = -1;

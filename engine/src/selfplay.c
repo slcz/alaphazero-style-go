@@ -71,6 +71,14 @@ typedef struct Slot {
 
 static Slot   *slots;
 static int     max_plys;
+/* Two-phase utility: a game is played purely for the result until the value
+ * head is sure, then purely for the margin. Deciding early with win/loss
+ * keeps the opening free of margin-chasing; switching to pure score keeps
+ * the search discriminating in decided positions, where win/loss is
+ * saturated and every move would otherwise look equal. GO_SWITCH_V = 0
+ * disables the switch. */
+static double switch_v = 0.95;
+static uint32_t n_switched;
 
 static void *xmalloc(size_t n) {
     void *p = malloc(n);
@@ -184,6 +192,9 @@ int main(int argc, char **argv) {
         puct_set_root_noise(atof(nenv),
                             tenv2 && *tenv2 ? atof(tenv2) : 10.83);
     }
+    const char *svenv = getenv("GO_SWITCH_V");
+    if (svenv && *svenv)
+        switch_v = atof(svenv);
     rng_seed(seed);
     PuctGame **handles = xmalloc((size_t)pool * sizeof *handles);
     if (puct_mux_new(pool, (size_t)block_mb << 20, b, komi, max_plys,
@@ -255,6 +266,14 @@ int main(int argc, char **argv) {
             double wsum;
             puct_root_stats(g, &root_visits, &wsum);
             double outlook = root_visits ? -(wsum / root_visits) : 0.0;
+            /* decided? flip this game to pure score and rebuild the tree:
+             * every stored Q is in the old (win/loss) units */
+            if (switch_v > 0.0 && puct_game_lambda(g) > 0.0 &&
+                fabs(outlook) >= switch_v) {
+                puct_set_game_lambda(g, 0.0);
+                puct_clear_tree(g);
+                n_switched++;
+            }
             {
                 double dmean;
                 uint32_t dmax;
@@ -365,10 +384,12 @@ int main(int argc, char **argv) {
     }
     printf("SUMMARY games=%u b=%d komi=%.1f sims=%d fast_sims=%d "
            "fast_p=%.2f pool=%d rows=%d elapsed=%.1fs rate=%.2f games/s "
-           "oom=%llu compact=%llu depth_mean=%.1f depth_max=%u\n",
+           "oom=%llu compact=%llu depth_mean=%.1f depth_max=%u "
+           "score_phase=%u\n",
            finished, b, komi, sims, fast_sims, fast_p, pool, rows, dt,
            dt > 0 ? finished / dt : 0.0,
            (unsigned long long)oom, (unsigned long long)compact,
-           depth_thinks ? depth_sum / depth_thinks : 0.0, depth_max);
+           depth_thinks ? depth_sum / depth_thinks : 0.0, depth_max,
+           n_switched);
     return 0;
 }

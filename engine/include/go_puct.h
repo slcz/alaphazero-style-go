@@ -101,8 +101,18 @@ void      puct_set_eval(PuctEvalFn fn, void *ctx);   /* the one evaluator */
 /* Search utility = lambda * win/loss + (1 - lambda) * tanh(margin/(2b)),
  * both terms in the mover's view and in [-1,1]. GO_UTIL_LAMBDA overrides;
  * lambda = 1 recovers pure AlphaZero value. */
-void   puct_set_utility_lambda(double l);
+void   puct_set_utility_lambda(double l);   /* default for new games */
 double puct_utility_lambda(void);
+
+/* Live blend for one game: 1.0 = pure win/loss, 0.0 = pure score. The
+ * driver flips a decided game to pure score. Changing it invalidates every
+ * stored Q (they are in the old units), so pair it with puct_clear_tree. */
+void   puct_set_game_lambda(PuctGame *g, double l);
+double puct_game_lambda(const PuctGame *g);
+
+/* Drop the search tree at the current position (state, walkers and the
+ * node block stay). */
+void   puct_clear_tree(PuctGame *g);
 
 
 /* Dirichlet noise mixed into the ROOT priors once per root:

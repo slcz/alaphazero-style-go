@@ -228,6 +228,61 @@ static void test_utility_lambda_blend(void) {
     puct_game_free(g);
 }
 
+/* ---- 3c. per-game blend: the driver flips a decided game to score -------- */
+
+static void test_per_game_lambda(void) {
+    /* maxply 1: every root child is a terminal with a known margin, so the
+     * two phases give cleanly different utilities for the same position */
+    PuctGame *g = puct_game_new(0, 7, 9.5f, 1);
+    CHECK(g != NULL);
+    CHECK(near_d(puct_game_lambda(g), puct_utility_lambda(), 1e-12));
+    CountCtx cc = {0};
+    puct_set_eval(eval_count, &cc);
+    puct_think(g, 60);
+
+    uint16_t mv[MAX_MOVES];
+    uint32_t vis[MAX_MOVES];
+    double q[MAX_MOVES];
+    int n = puct_root_children(g, mv, vis, q, NULL);
+    int pass = -1;
+    for (int i = 0; i < n; i++)
+        if (mv[i] == MOVE_PASS)
+            pass = i;
+    CHECK(pass >= 0);
+
+    /* phase 1 (win/loss): pass loses by komi, point moves own the board.
+     * Assert on VISITED children only — at 60 sims over 50 children a
+     * given child can miss out by chance, which is not what this tests. */
+    for (int i = 0; i < n; i++)
+        if (vis[i] > 0) {
+            double margin = mv[i] == MOVE_PASS ? -9.5 : 39.5;
+            CHECK(near_d(q[i], blend_at(puct_utility_lambda(),
+                                        margin > 0 ? 1.0 : -1.0, margin, 7),
+                         1e-6));
+        }
+
+    /* phase 2 (pure score) after clearing the tree. 9.5 on 7x7 is komi, so
+     * the margin alone reads tanh(-9.5/14) */
+    int ply = puct_state(g)->ply;
+    puct_set_game_lambda(g, 0.0);
+    CHECK(near_d(puct_game_lambda(g), 0.0, 1e-12));
+    puct_clear_tree(g);
+    CHECK(puct_state(g)->ply == ply);          /* position kept */
+    CHECK(near_d(puct_game_lambda(g), 0.0, 1e-12));  /* blend kept */
+    puct_think(g, 60);
+    n = puct_root_children(g, mv, vis, q, NULL);
+    int visited = 0;
+    for (int i = 0; i < n; i++)
+        if (vis[i] > 0) {
+            visited++;
+            double margin = mv[i] == MOVE_PASS ? -9.5 : 39.5;
+            CHECK(near_d(q[i], blend_at(0.0, margin > 0 ? 1.0 : -1.0,
+                                        margin, 7), 1e-6));
+        }
+    CHECK(visited > 0);
+    puct_game_free(g);
+}
+
 /* ---- 4. TT terminal wall: ply cap ends the game in-search ---------------- */
 
 static void test_wall_terminal(void) {
@@ -721,6 +776,7 @@ int main(int argc, char **argv) {
     test_bookkeeping();
     test_value_sign();
     test_utility_lambda_blend();
+    test_per_game_lambda();
     test_wall_terminal();
     test_determinism();
     test_prior_pattern();

@@ -487,6 +487,8 @@ def main() -> int:
                           "root_noise_total":
                               float(os.environ.get("GO_ROOT_NOISE_TOTAL",
                                                    10.83)),
+                          "switch_v":
+                              float(os.environ.get("GO_SWITCH_V", 0.95)),
                           # fixed: the gate always plays pure win/loss
                           "gate_lambda": 1.0}}
         # durability first: the checkpoint/summary/SGFs/shard leave the

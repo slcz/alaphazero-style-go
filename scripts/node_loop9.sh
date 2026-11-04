@@ -13,14 +13,16 @@ export HF_PUSH=0
 # Set it to 1/3 to bring back the decaying buffer.
 cd /workspace/go || exit 1
 export PUCT_WALKERS=4 PUCT_TASKS=6 NN_B=9 NN_BF16=1 NN_COMPILE=1
-# Search utility = lambda * win/loss + (1 - lambda) * tanh(margin / 2b).
-# 0.5 gave games that ended with ~24 empty points and 11 of them dame; the
-# score half also biases against continuing, because a leaf's margin
-# estimate is shrunk toward zero while a terminal's is exact. 0.8 keeps the
-# counting pressure at 20% and lets win/loss steer termination again.
-export GO_UTIL_LAMBDA=0.8
+# Two-phase utility. A game is played PURELY for the result (lambda 1.0)
+# until the value head is sure, then PURELY for the margin (lambda 0.0).
+# Early: no margin-chasing in the opening. Late: the search still
+# discriminates in decided positions, where win/loss saturates and every
+# move would otherwise look equal (the eye-fill blunder). The switch clears
+# the tree, because stored Q values are in the old units.
+export GO_UTIL_LAMBDA=1.0
 # Root Dirichlet noise (selfplay only): OFF. it016 ran with eps 0.25 and
 # gated 0.5075, i.e. exploration was not what was limiting progress.
+export GO_SWITCH_V=0.95
 export GO_ROOT_NOISE_EPS=0
 # TOTAL concentration over the move list, KataGo's 10.83 — per move that is
 # ~0.13 on 9x9 (~0.03 on 19x19), so the same number works at every size.
