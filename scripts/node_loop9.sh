@@ -38,6 +38,8 @@ while true; do
     pkill -9 -f engine_mux 2>/dev/null
     pkill -9 -f train_round.py 2>/dev/null
     sleep 2
+    # --max-plys above is only a fallback: the wall is 2.5*b*b per size,
+    # computed in size_plans (202 for 9x9, 562 for 15x15).
     python3 scripts/selfplay_loop.py \
         --work-dir "$WORK" \
         --b 9 --komi 7.5 \
@@ -46,8 +48,6 @@ while true; do
         --sims 200 --fast-sims 40 --fast-p 0.75 \
         --pool 2048 --rows 4096 \
         --sample-plys 10 --max-plys 250 \
-        # NOTE: --max-plys is only a fallback; the wall is 2.5*b*b per size
-
         --epochs 1 --batch 3072 --lr 0.01 \
         --buffer-keep 0 \
         --gate-games 400 --gate-sims 200 \
