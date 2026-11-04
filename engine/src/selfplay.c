@@ -79,6 +79,11 @@ static int     max_plys;
  * disables the switch. */
 static double switch_v = 0.95;
 static uint32_t n_switched;
+/* Fast tail: once a game is in the score phase its plies are not trained
+ * (they record sims < n_sims, which the row filter drops), so a small
+ * budget buys the settled board the ownership/score labels need at a
+ * fraction of the cost. OFF until the endgame is accurate. */
+static int score_fast_sims = 0;
 
 static void *xmalloc(size_t n) {
     void *p = malloc(n);
@@ -195,6 +200,9 @@ int main(int argc, char **argv) {
     const char *svenv = getenv("GO_SWITCH_V");
     if (svenv && *svenv)
         switch_v = atof(svenv);
+    const char *fvenv = getenv("GO_SCORE_FAST_SIMS");
+    if (fvenv && *fvenv)
+        score_fast_sims = atoi(fvenv);
     rng_seed(seed);
     PuctGame **handles = xmalloc((size_t)pool * sizeof *handles);
     if (puct_mux_new(pool, (size_t)block_mb << 20, b, komi, max_plys,
@@ -305,7 +313,10 @@ int main(int argc, char **argv) {
                                       window, true, 1.0, 0);
             if (slot_record_ply(s, (uint8_t)puct_state(g)->side,
                                 mv, outlook, (uint16_t)n_pi,
-                                (uint16_t)step_sims, pprobs) != 0) {
+                                (uint16_t)(puct_sims_cap(g) > 0 &&
+                                           puct_sims_cap(g) < step_sims
+                                           ? puct_sims_cap(g) : step_sims),
+                                pprobs) != 0) {
                 fprintf(stderr, "selfplay: ply overflow at game %u\n",
                         s->game_index);
                 return 1;
@@ -319,6 +330,8 @@ int main(int argc, char **argv) {
                  * is in win/loss units, so the tree goes with the switch. */
                 puct_set_game_lambda(g, 0.0);
                 puct_clear_tree(g);
+                if (score_fast_sims > 0)
+                    puct_set_sims_cap(g, score_fast_sims);
                 n_switched++;
             }
 

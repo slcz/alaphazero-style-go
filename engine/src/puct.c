@@ -102,6 +102,7 @@ struct PuctGame {
                                compaction remaps them */
     int        n_walkers;
     double     util_lambda;/* live utility blend for THIS game */
+    int        sims_cap;   /* per-game budget ceiling (0 = use the step's) */
     bool       think_done; /* completed (awaiting the driver's play) or
                               never-thought; see puct_walk */
     bool       suspended;  /* skip in walks: the game waits on something
@@ -353,6 +354,14 @@ void puct_set_utility_lambda(double l) {
 
 double puct_utility_lambda(void) {
     return g_util_lambda;
+}
+
+void puct_set_sims_cap(PuctGame *g, int n) {
+    g->sims_cap = n > 0 ? n : 0;
+}
+
+int puct_sims_cap(const PuctGame *g) {
+    return g->sims_cap;
 }
 
 void puct_set_game_lambda(PuctGame *g, double l) {
@@ -614,6 +623,7 @@ PuctGame *puct_game_new(size_t block_bytes, int b, float komi, int maxply) {
     g->komi = komi;
     g->maxply = (uint16_t)maxply;
     g->util_lambda = g_util_lambda;      /* born at the default blend */
+    g->sims_cap = 0;
     go_state_init(&g->state, b, komi, maxply);
     game_fresh(g);   /* walkers stay NULL until set (or defaulted in walk) */
     return g;
@@ -631,6 +641,7 @@ void puct_game_free(PuctGame *g) {
 void puct_game_reset(PuctGame *g) {
     go_state_init(&g->state, g->b, g->komi, g->maxply);
     g->util_lambda = g_util_lambda;      /* a new game starts at the default */
+    g->sims_cap = 0;
     game_fresh(g);
 }
 
@@ -647,6 +658,7 @@ int puct_game_reconfig(PuctGame *g, int b, float komi, int maxply) {
     g->komi = komi;
     g->maxply = (uint16_t)maxply;
     g->util_lambda = g_util_lambda;
+    g->sims_cap = 0;
     go_state_init(&g->state, b, komi, maxply);
     game_fresh(g);
     return 0;
@@ -932,6 +944,8 @@ enum { WALK_STUCK = 0, WALK_DONE = 1, WALK_FULL = 2 };
 static int puct_walk(PuctGame *g, int sims) {
     if (g->suspended)
         return WALK_DONE;
+    if (g->sims_cap > 0 && sims > g->sims_cap)
+        sims = g->sims_cap;          /* cheap tail: this game needs no more */
     if (g->think_done) {
         /* done-guard: a completed think stays complete until the driver
          * plays a move (puct_play clears done_key) */
