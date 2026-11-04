@@ -6,7 +6,7 @@
 # Sabaki spawns this itself; there is no port to connect to.
 #
 # knobs (env):
-#   PUCT_CKPT   checkpoint (default ckpts/it009.pt)
+#   PUCT_CKPT   checkpoint (default ckpts/it017.pt)
 #   GO_SIMS     sims per genmove (default 2000). MPS does ~860 sims/s
 #               (the forward is ~0.8 ms/row and it dominates), so:
 #               400 -> 0.5 s, 2000 -> 2.3 s, 5000 -> 6 s, 10000 -> 12 s
@@ -22,8 +22,13 @@
 # set from Sabaki's "Arguments" field:  gtp_mac.sh 1000
 set -e
 cd "${0%/*}/.."        # no dirname: Sabaki may spawn us with an empty PATH
-export PUCT_CKPT="${PUCT_CKPT:-$PWD/ckpts/it012.pt}"
+export PUCT_CKPT="${PUCT_CKPT:-$PWD/ckpts/it017.pt}"
 export GO_SIMS="${GO_SIMS:-2000}"
+# MCTS utility = lambda * win/loss + (1 - lambda) * tanh(margin / 2b), the
+# same blend selfplay uses. 1.0 is pure win/loss (plays anything that wins,
+# never counts); 0.8 keeps 20 % counting and is what training runs at.
+# Override from the shell: GO_UTIL_LAMBDA=1.0 ./scripts/gtp_mac.sh
+export GO_UTIL_LAMBDA="${GO_UTIL_LAMBDA:-0.8}"
 # Sabaki "Arguments": a single number overrides GO_SIMS.
 if [[ "${1:-}" =~ ^[0-9]+$ ]]; then
     export GO_SIMS="$1"

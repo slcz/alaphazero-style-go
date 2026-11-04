@@ -40,6 +40,7 @@ NN_TOKENS, NN_TOKEN_DIM, NN_POLICY = 361, 18, 362
 def setup(ckpt: str, device: str, rows: int, banks: int = 1) -> dict:
     import sys as _sys
     print(f"SETUP ckpt={ckpt!r} device={device!r} rows={rows} banks={banks} "
+          f"lambda={os.environ.get('GO_UTIL_LAMBDA', '0.5 (engine default)')} "
           f"cuda_avail={torch.cuda.is_available()} "
           f"count={torch.cuda.device_count()}", file=_sys.stderr)
     key = (ckpt, device)
