@@ -261,7 +261,7 @@ def size_plans(args):
         # unresolved boards: 15x15 natural p90 was 251 plies at it018 and
         # 20 % of games hit a 300 wall, 13x13 14 %
         maxply = args.max_plys if b <= 11 else args.max_plys + (100 if b == 13
-                                                              else 150)
+                                                              else 200)
         out.append((b, games, komi, rows, block, pool, maxply))
     return out
 
