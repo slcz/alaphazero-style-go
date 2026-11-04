@@ -266,14 +266,11 @@ int main(int argc, char **argv) {
             double wsum;
             puct_root_stats(g, &root_visits, &wsum);
             double outlook = root_visits ? -(wsum / root_visits) : 0.0;
-            /* decided? flip this game to pure score and rebuild the tree:
-             * every stored Q is in the old (win/loss) units */
-            if (switch_v > 0.0 && puct_game_lambda(g) > 0.0 &&
-                fabs(outlook) >= switch_v) {
-                puct_set_game_lambda(g, 0.0);
-                puct_clear_tree(g);
-                n_switched++;
-            }
+            /* decided? act AFTER this ply is recorded and played: clearing
+             * the tree here would empty the root before puct_learn_pi, and
+             * a move list of zero falls through to pass. */
+            bool settled = switch_v > 0.0 && puct_game_lambda(g) > 0.0 &&
+                           fabs(outlook) >= switch_v;
             {
                 double dmean;
                 uint32_t dmax;
@@ -305,6 +302,13 @@ int main(int argc, char **argv) {
             if (puct_play(g, mv) != 0) {
                 fprintf(stderr, "selfplay: puct_play failed\n");
                 return 1;
+            }
+            if (settled) {
+                /* the result is settled: finish for points. Every stored Q
+                 * is in win/loss units, so the tree goes with the switch. */
+                puct_set_game_lambda(g, 0.0);
+                puct_clear_tree(g);
+                n_switched++;
             }
 
             float score = 0.0f;
