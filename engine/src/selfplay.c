@@ -290,7 +290,18 @@ int main(int argc, char **argv) {
             int n_pi = puct_learn_pi(g, pmoves, pprobs, SP_PI_MAX);
 
             int window = sample_plys > 0 ? sample_plys : max_plys;
-            Move mv = match_pick_move(pmoves, NULL, pprobs, n_pi, s->ply,
+            /* Never sample a pass in the opening. Inside the sampled window
+             * the ACT is drawn from pi-bar, where pass carries a small but
+             * nonzero weight; a pass at ply < 10 ends the game on the spot
+             * (about 1% of games, and their labels are worthless). The
+             * recorded target keeps the real pi-bar. */
+            float samp[SP_PI_MAX];
+            memcpy(samp, pprobs, (size_t)n_pi * sizeof *samp);
+            if (s->ply < window && n_pi > 1)
+                for (int i = 0; i < n_pi; i++)
+                    if (pmoves[i] == MOVE_PASS)
+                        samp[i] = 0.0f;
+            Move mv = match_pick_move(pmoves, NULL, samp, n_pi, s->ply,
                                       window, true, 1.0, 0);
             if (slot_record_ply(s, (uint8_t)puct_state(g)->side,
                                 mv, outlook, (uint16_t)n_pi,
