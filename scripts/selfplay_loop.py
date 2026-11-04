@@ -257,7 +257,11 @@ def size_plans(args):
         # keeps the full token budget per wave.
         pool = max(64, rows // 2)
         pool = min(args.pool, pool, max(64, (12 * 1024) // block))
-        maxply = args.max_plys if b <= 11 else args.max_plys + 50
+        # the wall has to clear the natural tail or the round is scored on
+        # unresolved boards: 15x15 natural p90 was 251 plies at it018 and
+        # 20 % of games hit a 300 wall, 13x13 14 %
+        maxply = args.max_plys if b <= 11 else args.max_plys + (100 if b == 13
+                                                              else 150)
         out.append((b, games, komi, rows, block, pool, maxply))
     return out
 
