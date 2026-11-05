@@ -377,36 +377,33 @@ static float blend(double lam, float wdl, double margin, int b) {
                    + (1.0 - lam) * score_term(margin, b));
 }
 
-/* How settled the final board is: 1 when every point is owned, less by the
- * dame fraction. A terminal reached with points still unowned is worth less
- * than its raw margin, which is the soft, seki-safe way to stop a winner
- * from accepting a half-finished board (a hard no-pass rule cannot tell a
- * contested dame from a seki one). GO_SETTLE_W = 0 disables. */
-static double g_settle_w = 0.0;
+/* Points charged per unowned point when the game ends: a terminal is valued
+ * as if the opponent took every dame (k = 1). Colour-blind and monotone, so
+ * it penalises whoever accepts an unfinished board without rewarding the
+ * side that benefits from stopping. GO_SETTLE_K = 0 disables. */
+static double g_settle_k = 0.0;
 
-void puct_set_settle_weight(double w) {
-    g_settle_w = w < 0.0 ? 0.0 : w > 1.0 ? 1.0 : w;
+void puct_set_settle_k(double k) {
+    g_settle_k = k < 0.0 ? 0.0 : k;
 }
 
-double puct_settle_weight(void) {
-    return g_settle_w;
+double puct_settle_k(void) {
+    return g_settle_k;
 }
 
-static float settle(const State *st) {
-    if (g_settle_w <= 0.0)
-        return 1.0f;
+static int dame_count(const State *st) {
     float own[GO_MAX_POINTS];
     state_score(st, NULL, own);
     const int n = st->b * st->b;
-    int dame = 0;
+    int d = 0;
     for (int p = 0; p < n; p++)
         if (own[p] == 0.5f)
-            dame++;
-    return (float)(1.0 - g_settle_w * (double)dame / (double)n);
+            d++;
+    return d;
 }
 
-/* Terminal backup value, mover's view: the exact TT margin, blended, with
- * the score half discounted by how much of the board is still unowned. */
+/* Terminal backup value, mover's view: the exact TT margin, blended, charged
+ * for the dame it leaves behind. */
 static float terminal_value(const PuctGame *g, const PuctNode *n,
                             const State *st) {
     float wdl = (n->flags & PUCT_OUTC_WIN) ? 1.0f :
@@ -414,13 +411,9 @@ static float terminal_value(const PuctGame *g, const PuctNode *n,
     float score = 0.0f;
     state_score(st, &score, NULL);
     double margin = (st->side == BLACK) ? score : -score;
-    float u = blend(g->util_lambda, wdl, margin, st->b);
-    if (g_settle_w > 0.0) {
-        float c = settle(st);
-        u = (float)(g->util_lambda * (double)wdl
-                    + (1.0 - g->util_lambda) * score_term(margin, st->b) * c);
-    }
-    return u;
+    if (g_settle_k > 0.0)
+        margin -= g_settle_k * (double)dame_count(st);
+    return blend(g->util_lambda, wdl, margin, st->b);
 }
 
 static double prior_of_q(uint16_t q) {   /* prior_q decode */

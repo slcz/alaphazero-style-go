@@ -109,10 +109,11 @@ double puct_utility_lambda(void);
  * stored Q (they are in the old units), so pair it with puct_clear_tree. */
 void   puct_set_game_lambda(PuctGame *g, double l);
 
-/* Weight of the "settled board" discount on a terminal's score term:
- * score half *= (1 - w * dame/area). 0 disables; GO_SETTLE_W overrides. */
-void   puct_set_settle_weight(double w);
-double puct_settle_weight(void);
+/* Points charged per unowned point at a terminal: the score half is valued
+ * as margin - k*dame, i.e. as if the opponent took every dame. 0 (default)
+ * disables; GO_SETTLE_K overrides. */
+void   puct_set_settle_k(double k);
+double puct_settle_k(void);
 double puct_game_lambda(const PuctGame *g);
 
 /* Per-game ceiling on the search budget for each think (0 = off). Used to

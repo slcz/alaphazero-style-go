@@ -6,9 +6,8 @@
 # round would keep the random net as the generator, so the data never
 # improves and the run stalls. Raise this back to ~0.52 once the gate is
 # clearly climbing.
-# Mixed from round 4: 7x7-only converges to the trunk's loss, so half the
-# round now generates 9x9 (komi 7.5, wall 202) on the same weights. The
-# gate stays 7x7 at komi 9.5 -- it is this run's own board.
+# Board mix climbs with the run: 15k 7x7 (its own board, still the gate's
+# board), 10k 9x9, 5k 11x11. Same weights, same round.
 # A fresh work dir means no best.pt, and selfplay_loop then bootstraps from
 # a random-init checkpoint, so nothing from the 9x9/11-15 lineage leaks in.
 # Utility is the FIXED blend lambda 0.8 (no two-phase switch: at 7x7 the
@@ -20,7 +19,10 @@ export PUCT_WALKERS=4 PUCT_TASKS=6 NN_B=7 NN_BF16=1 NN_COMPILE=1
 export GO_UTIL_LAMBDA=0.8
 export GO_SWITCH_V=0            # fixed blend, no score-phase switch
 export GO_SCORE_FAST_SIMS=0
-export GO_SETTLE_W=1            # terminal score discounted by dame/area
+# Charge k points per unowned point at a terminal (k=1: value it as if the
+# opponent takes every dame). Colour-blind and monotone, so it penalises
+# whoever ends an unfinished game without rewarding the side that stops.
+export GO_SETTLE_K=1
 export GO_ROOT_NOISE_EPS=0
 export NN_WAVE_STATS=1
 WORK=/workspace/go-run-7x7
@@ -35,7 +37,7 @@ while true; do
         --b 7 --komi 9.5 \
         --forever \
         --games 30000 \
-        --sizes 7:15000,9:15000 \
+        --sizes 7:15000,9:10000,11:5000 \
         --sims 200 --fast-sims 40 --fast-p 0.75 \
         --pool 2048 --rows 4096 \
         --sample-plys 10 --max-plys 250 \
