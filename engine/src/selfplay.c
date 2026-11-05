@@ -14,8 +14,7 @@
  * games batched. The stored target and the played move are the
  * regularized policy pi-bar (Grill et al. 2020, LEARN + ACT): sample it
  * for the first sample_plys plies, argmax after (sample_plys=0 samples
- * every ply). No root Dirichlet noise — the search itself samples pi-bar
- * at every node.
+ * every ply).
  *
  * Playout cap randomization (KataGo, Wu 2020 §4): with fast_sims > 0,
  * each step draws ONE budget for the whole pool — fast_sims with
@@ -188,15 +187,6 @@ int main(int argc, char **argv) {
     }
 
     go_init();
-    /* root Dirichlet noise: also selfplay-only, same reasoning. The
-     * concentration is TOTAL over the legal moves (KataGo 10.83), so it
-     * means the same thing at every board size. */
-    const char *nenv = getenv("GO_ROOT_NOISE_EPS");
-    if (nenv && *nenv) {
-        const char *tenv2 = getenv("GO_ROOT_NOISE_TOTAL");
-        puct_set_root_noise(atof(nenv),
-                            tenv2 && *tenv2 ? atof(tenv2) : 10.83);
-    }
     const char *svenv = getenv("GO_SWITCH_V");
     if (svenv && *svenv)
         switch_v = atof(svenv);
