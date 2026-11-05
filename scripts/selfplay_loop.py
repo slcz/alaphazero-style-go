@@ -264,6 +264,10 @@ def size_plans(args):
         # keeps the full token budget per wave.
         pool = max(64, rows // 2)
         pool = min(args.pool, pool, max(64, (12 * 1024) // block))
+        # a shipment carries ~2 rows per live game whatever the cap, so the
+        # cap has to BE 2*pool or the wave pads (7x7 at 6771: 57% fill,
+        # 3841 rows/shipment; at 4096 with the same pool: 92%)
+        rows = 2 * pool
         maxply = max_plys_for(b)
         out.append((b, games, komi, rows, block, pool, maxply))
     return out
