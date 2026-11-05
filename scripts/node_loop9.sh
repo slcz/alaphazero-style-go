@@ -22,7 +22,15 @@ export PUCT_WALKERS=4 PUCT_TASKS=6 NN_B=9 NN_BF16=1 NN_COMPILE=1
 export GO_UTIL_LAMBDA=1.0
 # Root Dirichlet noise (selfplay only): OFF. it016 ran with eps 0.25 and
 # gated 0.5075, i.e. exploration was not what was limiting progress.
+# 0.95, not 0.98: with a cheap tail the threshold is not about being sure
+# before paying for search, it is about how many games get a score-driven
+# endgame at all. 89 % switch at 0.95 vs 85 % at 0.98, and the 0.90-0.98
+# band would otherwise play its endgame with a saturated value head.
 export GO_SWITCH_V=0.95
+# Tail at the normal budget (0 = off): the decided part is played out with
+# full search and its slow-cap plies are trained, so the endgame policy keeps
+# learning. Set 4 to make the tail cheap again.
+export GO_SCORE_FAST_SIMS=0
 export GO_ROOT_NOISE_EPS=0
 # TOTAL concentration over the move list, KataGo's 10.83 — per move that is
 # ~0.13 on 9x9 (~0.03 on 19x19), so the same number works at every size.
@@ -45,6 +53,7 @@ while true; do
         --b 9 --komi 7.5 \
         --forever \
         --games 30000 \
+        --sizes 9:15000,11:8000,13:5000,15:2000 \
         --sims 200 --fast-sims 40 --fast-p 0.75 \
         --pool 2048 --rows 4096 \
         --sample-plys 10 --max-plys 250 \

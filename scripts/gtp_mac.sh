@@ -22,13 +22,13 @@
 # set from Sabaki's "Arguments" field:  gtp_mac.sh 1000
 set -e
 cd "${0%/*}/.."        # no dirname: Sabaki may spawn us with an empty PATH
-export PUCT_CKPT="${PUCT_CKPT:-$PWD/ckpts/it018.pt}"
-export GO_SIMS="${GO_SIMS:-2000}"
+export PUCT_CKPT="${PUCT_CKPT:-$PWD/ckpts/it023.pt}"
+export GO_SIMS="${GO_SIMS:-1000}"
 # MCTS utility = lambda * win/loss + (1 - lambda) * tanh(margin / 2b), the
 # same blend selfplay uses. 1.0 is pure win/loss (plays anything that wins,
 # never counts); 0.8 keeps 20 % counting and is what training runs at.
 #   GO_UTIL_LAMBDA=0.8 ./scripts/gtp_mac.sh    # the training blend
-export GO_UTIL_LAMBDA="${GO_UTIL_LAMBDA:-0.0}"
+export GO_UTIL_LAMBDA="${GO_UTIL_LAMBDA:-0.9}"
 # Sabaki "Arguments": a single number overrides GO_SIMS.
 if [[ "${1:-}" =~ ^[0-9]+$ ]]; then
     export GO_SIMS="$1"
