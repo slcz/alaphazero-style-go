@@ -302,34 +302,58 @@ def train(args, work: Path, base: Path, out: Path) -> int:
 
 
 
+def gate_specs(args):
+    """[(b, komi, games)] — the gate may span several boards, evenly split."""
+    if not args.gate_sizes:
+        return [(args.b, args.komi, args.gate_games)]
+    parts = []
+    for spec in args.gate_sizes.split(","):
+        b, k = spec.split(":")
+        parts.append((int(b), float(k)))
+    per = max(2 * len(parts), (args.gate_games // len(parts)) // 2 * 2)
+    return [(b, k, per) for b, k in parts]
+
+
 def gate(args, candidate: Path, best: Path, eval_json: Path) -> float | None:
-    log_path = eval_json.with_suffix(".log")
-    # opening diversity: sample ∝ visits for the first N plies (the
-    # referee's 0-1 random moves alone would repeat openings)
     # the gate is a WIN/LOSS match: both engines play the pure
     # result-oriented search regardless of the blend selfplay trains under,
     # so the number answers "who wins", not "who wins by more"
     env = dict(os.environ, PUCT_SAMPLE_PLYS=str(args.gate_sample_plys),
                GO_UTIL_LAMBDA="1.0")
-    cmd = [sys.executable, "scripts/gate_match.py",
-           "--ckpt-a", str(candidate), "--ckpt-b", str(best),
-           "--games", str(args.gate_games // 2),
-           "--a-sims", str(args.gate_sims), "--b-sims", str(args.gate_sims),
-           "--b", str(args.b), "--komi", str(args.komi),
-           "--max-plys", str(args.gate_max_plys),
-           "--resign", str(args.gate_resign),
-           "--device", args.device,
-           # rows per bank: walkers × games is the exact park bound —
-           # a 4096 landing zone would pad 5x per FP8 wave (gen's size)
-           "--rows", str(int(os.environ.get("PUCT_WALKERS", "4"))
-                         * (args.gate_games // 2)),
-           "--json", str(eval_json),
-           "--sgf-dir", str(eval_json.parent / "gate-sgf")]
-    if pump(cmd, log_path, env=env) != 0:
+    tot_w = tot_l = 0
+    per_size = {}
+    for b, komi, games in gate_specs(args):
+        wave = games // 2
+        j = eval_json.with_name(f"{eval_json.stem}-{b}x{b}.json")
+        lp = j.with_suffix(".log")
+        cmd = [sys.executable, "scripts/gate_match.py",
+               "--ckpt-a", str(candidate), "--ckpt-b", str(best),
+               "--games", str(wave),
+               "--a-sims", str(args.gate_sims),
+               "--b-sims", str(args.gate_sims),
+               "--b", str(b), "--komi", str(komi),
+               "--max-plys", str(max_plys_for(b)),
+               "--resign", str(args.gate_resign),
+               "--device", args.device,
+               # rows per bank: walkers × games is the exact park bound —
+               # a 4096 landing zone would pad 5x per FP8 wave (gen's size)
+               "--rows", str(int(os.environ.get("PUCT_WALKERS", "4")) * wave),
+               "--json", str(j),
+               "--sgf-dir", str(eval_json.parent / "gate-sgf" / f"{b}x{b}")]
+        if pump(cmd, lp, env=env) != 0 or not j.exists():
+            return None
+        r = json.loads(j.read_text())
+        per_size[f"{b}x{b}"] = {k: r[k] for k in ("w", "l", "score_a")}
+        tot_w += r["w"]
+        tot_l += r["l"]
+    n = tot_w + tot_l
+    if n == 0:
         return None
-    if eval_json.exists():
-        return float(json.loads(eval_json.read_text())["score_a"])
-    return None
+    score = tot_w / n
+    eval_json.write_text(json.dumps(
+        {"score_a": score, "w": tot_w, "l": tot_l, "per_size": per_size},
+        indent=1))
+    return score
 
 
 def main() -> int:
@@ -367,7 +391,10 @@ def main() -> int:
     ap.add_argument("--gate-min", type=float, default=0.52,
                     help="promote only if the gate beats this; a 400-game "
                          "match has SE ~0.025, so 0.50 means 'even'")
-    ap.add_argument("--gate-games", type=int, default=400)
+    ap.add_argument("--gate-games", type=int, default=400,
+                    help="total games, split evenly over --gate-sizes")
+    ap.add_argument("--gate-sizes", default="",
+                    help='e.g. "7:9.5,9:7.5"; empty = args.b/args.komi only')
     ap.add_argument("--gate-sims", type=int, default=200)
     ap.add_argument("--gate-max-plys", type=int, default=200)
     ap.add_argument("--gate-resign", type=float, default=0.0,
@@ -464,6 +491,12 @@ def main() -> int:
             score = gate(args, ckpt, best, eval_json)
         # a match inside the noise band is not evidence of improvement:
         # keep the previous base so a coin flip cannot become the teacher
+        if eval_json.exists():
+            ev = json.loads(eval_json.read_text())
+            if ev.get("per_size"):
+                log("it{it}: gate by size ".format(it=it) + "  ".join(
+                    f"{k} {v['score_a']:.3f} ({v['w']}-{v['l']})"
+                    for k, v in ev["per_size"].items()))
         promote = score is not None and score >= args.gate_min
         if promote:
             shutil.copy(ckpt, work / "best.pt.next")

@@ -42,6 +42,7 @@ while true; do
         --epochs 1 --batch 3072 --lr 0.01 \
         --buffer-keep 0 \
         --gate-games 400 --gate-sims 200 \
+        --gate-sizes 7:9.5,9:7.5 \
         --gate-min 0.0 \
         --device cuda --seed 1 \
         >> "$WORK/loop.out" 2>&1
