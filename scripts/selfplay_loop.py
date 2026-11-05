@@ -492,6 +492,8 @@ def main() -> int:
                                                    10.83)),
                           "switch_v":
                               float(os.environ.get("GO_SWITCH_V", 0.95)),
+                          "score_fast_sims":
+                              int(os.environ.get("GO_SCORE_FAST_SIMS", 0)),
                           # fixed: the gate always plays pure win/loss
                           "gate_lambda": 1.0}}
         # durability first: the checkpoint/summary/SGFs/shard leave the

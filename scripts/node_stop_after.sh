@@ -8,7 +8,7 @@
 #
 # Run it in its own tmux session (it must outlive the ssh connection).
 set -u
-W=/workspace/go-run-9x9
+W=${WORK:-/workspace/go-run-9x9}
 N=${1:?usage: node_stop_after.sh <iteration> [--restart]}
 RESTART=${2:-}
 
@@ -18,7 +18,9 @@ done
 echo "[$(date +%H:%M:%S)] it$N recorded — stopping"
 sleep 5
 
-pkill -9 -f node_loop9.sh          # the supervisor first, or it restarts
+pkill -9 -f node_loop7.sh          # the supervisor first, or it restarts
+pkill -9 -f node_loop9.sh
+tmux kill-session -t go7 2>/dev/null
 tmux kill-session -t go9 2>/dev/null
 sleep 1
 pkill -9 -f selfplay_loop.py
