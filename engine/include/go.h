@@ -81,6 +81,9 @@ enum { TERM_PLAYING = 0, TERM_OVER = 1 };
  * Either pointer may be NULL. Pure. */
 int state_termination(const State *s, float *score, float *ownership);
 
+/* TT score / ownership of the position as it stands (mid-game allowed). */
+void state_score(const State *s, float *score, float *ownership);
+
 /* GTP vertex ("D4", "pass"); column letters skip I. 0 = ok, -1 = invalid. */
 int  go_parse_gtp(const State *s, const char *v, Move *out);
 void move_to_gtp(Move m, int b, char out[6]);   /* "pass" needs 6 with NUL */

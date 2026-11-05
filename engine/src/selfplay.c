@@ -203,6 +203,9 @@ int main(int argc, char **argv) {
     const char *fvenv = getenv("GO_SCORE_FAST_SIMS");
     if (fvenv && *fvenv)
         score_fast_sims = atoi(fvenv);
+    const char *st_env = getenv("GO_SETTLE_W");
+    if (st_env && *st_env)
+        puct_set_settle_weight(atof(st_env));
     rng_seed(seed);
     PuctGame **handles = xmalloc((size_t)pool * sizeof *handles);
     if (puct_mux_new(pool, (size_t)block_mb << 20, b, komi, max_plys,

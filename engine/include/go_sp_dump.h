@@ -68,7 +68,7 @@ enum {
     SP_END_NATURAL,      /* double pass */
     SP_END_RESIGN,       /* reserved: eval-only, never in selfplay shards */
     SP_END_ADJUDICATED,  /* maxply reached */
-    SP_END_PAUSED        /* selfplay stopped once the result was certain;
+    SP_END_PAUSED,       /* selfplay stopped once the result was certain;
                           * score/ownership come from the KataGo labeler */
 };
 
