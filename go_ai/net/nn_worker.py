@@ -17,7 +17,7 @@ Three-phase protocol (as in chess):
   pull(bank, n)       enqueue D2H for the results, gated on the forward.
   wait_ready(bank)    block until the bank's D2H completed.
 
-On backends without streams (MPS, CPU) push runs the whole
+On backends without streams (CPU) push runs the whole
 H2D + forward + D2H synchronously and pull/wait_ready are no-ops. Runs
 entirely on the landing zone's single io thread (the only Python entrant).
 """

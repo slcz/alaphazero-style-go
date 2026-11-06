@@ -74,8 +74,8 @@ def _rope_tables(b: int, pairs: int, lam0: float, device, dtype, d_head: int):
     key = (b, pairs, lam0, str(device), dtype, d_head)
     t = _rope_cache.get(key)
     if t is None:
-        # built on CPU in float64 (exact); MPS has no float64 — the
-        # tables are tiny and cached, the move is free
+        # built on CPU in float64 (exact); the tables are tiny and
+        # cached, the move to the target device is free
         idx = torch.arange(b * b, dtype=torch.float64)
         x, y = idx % b, idx // b
         theta = 2 * math.pi / (lam0 * 2.0 ** torch.arange(pairs))
@@ -119,7 +119,7 @@ class FP8Linear(nn.Module):
     quantized linear consumes LN-bounded input (|x| <= sqrt(T) ~ 19,
     far under E4M3's 448), so no activation scale or clamp is needed;
     fp8 relative precision is scale-invariant. Elsewhere a dequantized
-    matmul runs as the reference path (tests, MPS)."""
+    matmul runs as the reference path (tests, CPU)."""
 
     def __init__(self, linear: nn.Linear):
         super().__init__()
@@ -170,9 +170,8 @@ def to_fp8_(root: nn.Module) -> None:
 
 def to_half_(root: nn.Module) -> None:
     """Replace FP8Linears with plain fp16 Linears (dequantized once).
-    Non-CUDA targets (MPS) cannot hold the fp8 dtype at all, and MPS
-    bf16 matmul asserts on the fused bias — fp16 is the stable fast
-    path (same 2x rate). Conversion happens on CPU at load time."""
+    Non-CUDA targets cannot hold the fp8 dtype — fp16 is the stable
+    fast path (same 2x rate). Conversion happens on CPU at load time."""
 
     def conv(m: FP8Linear) -> nn.Linear:
         lin = nn.Linear(m.wq.shape[1], m.wq.shape[0], bias=m.bias is not None)

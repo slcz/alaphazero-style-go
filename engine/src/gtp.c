@@ -1,7 +1,7 @@
 /*
  * gtp.c — the GTP front-end (play path; no wasm, no GUI).
  *
- *   gtp [device=mps] [rows=0]      env: PUCT_CKPT (required unless
+ *   gtp [device=cpu] [rows=0]      env: PUCT_CKPT (required unless
  *                                       device=dummy), GO_SIMS, GO_MAXPLY
  *
  * Implements the required subset only: protocol_version, name, version,
@@ -375,7 +375,7 @@ static void do_showstate(const char *id) {
 }
 
 int main(int argc, char **argv) {
-    const char *device = argc > 1 ? argv[1] : "mps";
+    const char *device = argc > 1 ? argv[1] : "cpu";
     int rows = argc > 2 ? atoi(argv[2]) : 0;
     if (rows <= 0)
         rows = 1024;

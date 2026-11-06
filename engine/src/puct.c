@@ -1,8 +1,7 @@
 /* puct.c — RPO MCTS + multi-game batching (go_puct.h), ported from the
  * chess engine: pi-bar search (Grill et al. 2020), mmap'd node blocks
  * with compaction, double-banked landing zone + io thread, walkers, and
- * the multi-game mux. Game-specific seams only: go.h rules, go_nn.h
- * encoder, go_policy_slot, TT terminals. No wasm paths — native only. */
+ * the multi-game mux. */
 #ifndef _DEFAULT_SOURCE
 #define _DEFAULT_SOURCE
 #endif

@@ -85,7 +85,7 @@ typedef enum {
                          logp/wdl (the only GPU-blocking op) */
 } PuctEvalOp;
 
-/* Synchronous evaluators (dummy, MPS, scripted tests) do the whole
+/* Synchronous evaluators (dummy, CPU, scripted tests) do the whole
  * forward at PUSH and treat PULL/WAIT as no-ops. */
 typedef void (*PuctEvalFn)(void *ctx, PuctEvalOp op, int bank, int n,
                            const float *planes, const uint8_t *masks,

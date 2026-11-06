@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
-"""gate_match.py — two-network gate matches in net-lockstep waves
-(ported from the chess gate; the referee drives the C rules via cffi).
+"""batch_match.py — two-network gate matches in net-lockstep waves
 
 Two `engine_mux` processes (one per checkpoint, one network each) host
 ALL of a wave's games through their own landing-zone mux, so every phase
 batches all live games on the GPU. Wave 0 gives network A Black in every
 game; wave 1 swaps colors. Openings: the referee plays r uniformly random
-legal point moves per game (r ~ geometric over 1/4 of the board area's
-square root scale — kept simple: r = rng.integers(0, 4) on 7x7, scaled by
-b/7), then the engines think.
+legal point moves per game (r = randint(0, --openings), default 1), then
+the engines think; the engines play argmax unless PUCT_SAMPLE_PLYS is
+set in the environment.
 
 Resignation is the DRIVER's call (AGENTS.md): when an engine's root value
 exceeds --resign (0.95 default) against it and the game has passed
