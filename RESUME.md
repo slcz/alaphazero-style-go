@@ -22,17 +22,16 @@ board  plies(b2)  cap   pass/g  dame  |score|
 7x7 is close to done (cap solved, length ~b2, |score| 2.5 = tight games).
 9x9/11x11 lag on completeness (dame 6-7).
 
-## settle rule: OFF (measured, do not re-litigate)
-A/B on one fixed net (it009, 2000 games/board, only the rule differs):
-  rule                 dame 7x7   dame 9x9
-  off (W=0)              5.13       5.46
-  sign-aware W=1         5.27       5.77
-  unconditional (old)    6.16        -      (1000 games)
-  point-per-dame K=1     7.46       7.02
-None helps completeness; it007's dame 2.02 was the net, not the rule.
-It is selfplay-only shaping (the gate runs lambda 1.0), so it cannot show
-in the gate directly. Launcher: GO_SETTLE_W=0. Modes still in the engine
-(GO_SETTLE_W / GO_SETTLE_MODE 1=sign-aware 2=unconditional) if ever needed.
+## utility: plain blend, no knobs
+terminal_value = blend(lambda, wdl, margin, b)
+             = lambda*wdl + (1-lambda)*tanh(margin/2b)
+No settle/dame term. Four shapes and both signs were A/B'd on one fixed
+net (it009, 400 games/arm) and every one made endings worse than leaving
+it off: dame 7x7/9x9  off 5.23/4.43 | k=1 sign-corrected 9.44/6.34 |
+k=1 sign-flipped 7.46/7.02 | sign-aware scale 5.27/5.77 | unconditional
+6.16/-. Caps and game length moved with them. The dame a game leaves is
+set by the play that leads there (score resolution), not by a terminal
+charge, so the code is gone (no GO_SETTLE_* anywhere).
 
 ## next round
 node_loop7.sh is set for equal 10k shares:

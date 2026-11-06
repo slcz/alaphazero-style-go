@@ -109,11 +109,6 @@ double puct_utility_lambda(void);
  * stored Q (they are in the old units), so pair it with puct_clear_tree. */
 void   puct_set_game_lambda(PuctGame *g, double l);
 
-/* Points charged per unowned point when the game ends, credited to the
- * opponent of whoever ended it (the closer pays). 1 = all of them.
- * 0 (default) disables; GO_SETTLE_K overrides. */
-void   puct_set_settle_k(double k);
-double puct_settle_k(void);
 double puct_game_lambda(const PuctGame *g);
 
 /* Per-game ceiling on the search budget for each think (0 = off). Used to

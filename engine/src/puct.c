@@ -377,33 +377,6 @@ static float blend(double lam, float wdl, double margin, int b) {
                    + (1.0 - lam) * score_term(margin, b));
 }
 
-/* Shared points still on the board when the game ends are credited to the
- * OPPONENT of whoever ended it: the k*dame term is ADDED in the terminal's
- * own view, and the backup negates it, so the player who moved into the
- * terminal pays. (Subtracting here would PAY the closer, which measured as
- * more dame and shorter games for every variant we tried.)
- * GO_SETTLE_K = points per unowned point; 1 means all of them. 0 = off. */
-static double g_settle_k = 0.0;
-
-static int dame_count(const State *st) {
-    float own[GO_MAX_POINTS];
-    state_score(st, NULL, own);
-    const int n = st->b * st->b;
-    int d = 0;
-    for (int p = 0; p < n; p++)
-        if (own[p] == 0.5f)
-            d++;
-    return d;
-}
-
-void puct_set_settle_k(double k) {
-    g_settle_k = k < 0.0 ? 0.0 : k;
-}
-
-double puct_settle_k(void) {
-    return g_settle_k;
-}
-
 /* Terminal backup value, mover's view: the exact TT margin, blended, charged
  * for the dame it leaves behind. */
 static float terminal_value(const PuctGame *g, const PuctNode *n,
@@ -413,11 +386,6 @@ static float terminal_value(const PuctGame *g, const PuctNode *n,
     float score = 0.0f;
     state_score(st, &score, NULL);
     double margin = (st->side == BLACK) ? score : -score;
-    if (g_settle_k > 0.0) {
-        int d = dame_count(st);
-        if (d)
-            margin += g_settle_k * (double)d;      /* + : the closer pays */
-    }
     return blend(g->util_lambda, wdl, margin, st->b);
 }
 
