@@ -20,11 +20,13 @@ export PUCT_WALKERS=4 PUCT_TASKS=6 NN_B=7 NN_BF16=1 NN_COMPILE=1
 export GO_UTIL_LAMBDA=0.8
 export GO_SWITCH_V=0            # fixed blend, no score-phase switch
 export GO_SCORE_FAST_SIMS=0
-# Terminal dame charge: OFF. A/B on a fixed net (it009, 2000 games/board)
-# showed no gain in completeness: dame 5.13 -> 5.27 (7x7), 5.46 -> 5.77
-# (9x9) for W=1, and the point-per-dame form was worse still (7.46 / 7.02).
-# Caps improved slightly (9x9 5.2% -> 4.5%), not worth another knob.
-export GO_SETTLE_W=0
+# Terminal dame charge: OFF, and settled. Four rules x both signs, all
+# A/B'd on one fixed net (it009): dame 7x7/9x9 of
+#   off 5.23/4.43 | k=1 sign-corrected 9.44/6.34 | k=1 sign-flipped 7.46/7.02
+#   | sign-aware scale 5.27/5.77 | unconditional scale 6.16/-
+# Every version is worse than off. The dame a game leaves behind is set by
+# the play that leads there (score resolution), not by a terminal charge.
+export GO_SETTLE_K=0
 export GO_ROOT_NOISE_EPS=0
 export NN_WAVE_STATS=1
 WORK=/workspace/go-run-7x7

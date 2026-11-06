@@ -377,30 +377,13 @@ static float blend(double lam, float wdl, double margin, int b) {
                    + (1.0 - lam) * score_term(margin, b));
 }
 
-/* Sign-aware proportionate charge for the dame a terminal leaves behind:
- * the mover's win is scaled by (1 - w*dame/area) and a loss by
- * (1 + w*dame/area), so either side sees the terminal as worse than it is
- * and neither can gain by stopping early. Proportional, so it stays inside
- * tanh's range and cannot turn a win into a loss. GO_SETTLE_W = 0 disables. */
-static double g_settle_w = 0.0;
-static int    g_settle_mode = 1;     /* 1 sign-aware, 2 unconditional,
-                                      * 3 separate dame term */
-
-void puct_set_settle_weight(double w) {
-    g_settle_w = w < 0.0 ? 0.0 : w;
-}
-
-void puct_set_settle_mode(int m) {
-    g_settle_mode = (m >= 1 && m <= 3) ? m : 1;
-}
-
-int puct_settle_mode(void) {
-    return g_settle_mode;
-}
-
-double puct_settle_weight(void) {
-    return g_settle_w;
-}
+/* Shared points still on the board when the game ends are credited to the
+ * OPPONENT of whoever ended it: the k*dame term is ADDED in the terminal's
+ * own view, and the backup negates it, so the player who moved into the
+ * terminal pays. (Subtracting here would PAY the closer, which measured as
+ * more dame and shorter games for every variant we tried.)
+ * GO_SETTLE_K = points per unowned point; 1 means all of them. 0 = off. */
+static double g_settle_k = 0.0;
 
 static int dame_count(const State *st) {
     float own[GO_MAX_POINTS];
@@ -413,6 +396,14 @@ static int dame_count(const State *st) {
     return d;
 }
 
+void puct_set_settle_k(double k) {
+    g_settle_k = k < 0.0 ? 0.0 : k;
+}
+
+double puct_settle_k(void) {
+    return g_settle_k;
+}
+
 /* Terminal backup value, mover's view: the exact TT margin, blended, charged
  * for the dame it leaves behind. */
 static float terminal_value(const PuctGame *g, const PuctNode *n,
@@ -422,24 +413,10 @@ static float terminal_value(const PuctGame *g, const PuctNode *n,
     float score = 0.0f;
     state_score(st, &score, NULL);
     double margin = (st->side == BLACK) ? score : -score;
-    if (g_settle_w > 0.0 && g_settle_mode == 3) {
-        /* score half and dame half, each (1-lambda)/2: the dame term is a
-         * separate bounded cost, so the score keeps its meaning. One dame
-         * is worth one point of margin at the 2b normaliser. */
-        double d = (double)dame_count(st) / (2.0 * (double)st->b);
-        if (d > 1.0)
-            d = 1.0;
-        return (float)(g->util_lambda * (double)wdl
-                       + 0.5 * (1.0 - g->util_lambda) * score_term(margin, st->b)
-                       - 0.5 * (1.0 - g->util_lambda) * d);
-    }
-    if (g_settle_w > 0.0 && margin != 0.0) {
+    if (g_settle_k > 0.0) {
         int d = dame_count(st);
-        if (d) {
-            double f = g_settle_w * (double)d / (double)(st->b * st->b);
-            margin *= (g_settle_mode == 2 || margin > 0.0) ? 1.0 - f
-                                                          : 1.0 + f;
-        }
+        if (d)
+            margin += g_settle_k * (double)d;      /* + : the closer pays */
     }
     return blend(g->util_lambda, wdl, margin, st->b);
 }

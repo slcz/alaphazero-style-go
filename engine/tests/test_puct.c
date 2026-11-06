@@ -283,6 +283,49 @@ static void test_per_game_lambda(void) {
     puct_game_free(g);
 }
 
+/* ---- 3c. settle charge: punishing the UNSETTLED terminal ---------------- */
+
+static void test_settle_charge_direction(void) {
+    /* maxply 1 on an empty 7x7: the pass child ends with every point
+     * unowned, a point move ends with none. Unowned points go to the
+     * OPPONENT of whoever ended the game, so the pass child must be far
+     * worse for the side that passed than an ordinary move. */
+    PuctGame *g = puct_game_new(0, 7, 9.5f, 1);
+    CHECK(g != NULL);
+    double lam = puct_game_lambda(g);
+    CountCtx cc = {0};
+    puct_set_eval(eval_count, &cc);
+    puct_set_settle_k(1.0);
+    puct_think(g, 80);
+
+    uint16_t mv[MAX_MOVES];
+    uint32_t vis[MAX_MOVES];
+    double q[MAX_MOVES];
+    int n = puct_root_children(g, mv, vis, q, NULL);
+    int seen_pass = 0, seen_move = 0;
+    for (int i = 0; i < n; i++) {
+        if (vis[i] == 0)
+            continue;
+        if (mv[i] == MOVE_PASS) {
+            /* terminal view is WHITE: wdl +1, margin +9.5 + 49 dame */
+            double white = lam * 1.0 + (1.0 - lam) * tanh(58.5 / 14.0);
+            CHECK(near_d(q[i], -white, 1e-6));
+            seen_pass++;
+        } else {
+            /* black owns the board: wdl -1 for white, no dame */
+            double white = lam * -1.0 + (1.0 - lam) * tanh(-39.5 / 14.0);
+            CHECK(near_d(q[i], -white, 1e-6));
+            seen_move++;
+        }
+    }
+    CHECK(seen_pass == 1);
+    CHECK(seen_move > 0);
+    /* and it must be a punishment, not a reward */
+    CHECK(q[0] < 0.0 || seen_move > 0);
+    puct_set_settle_k(0.0);
+    puct_game_free(g);
+}
+
 /* ---- 4. TT terminal wall: ply cap ends the game in-search ---------------- */
 
 static void test_wall_terminal(void) {
@@ -777,6 +820,7 @@ int main(int argc, char **argv) {
     test_value_sign();
     test_utility_lambda_blend();
     test_per_game_lambda();
+    test_settle_charge_direction();
     test_wall_terminal();
     test_determinism();
     test_prior_pattern();
