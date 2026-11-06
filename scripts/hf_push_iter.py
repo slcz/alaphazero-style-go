@@ -79,6 +79,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("it", type=int)
     ap.add_argument("--root", default="/workspace/go-run-9x9")
+    ap.add_argument("--prefix", default="9x9",
+                    help="remote directory on both HF repos")
     ap.add_argument("--rename", default=None,
                     help="also push the checkpoint under this name (gen0)")
     args = ap.parse_args()
@@ -134,24 +136,24 @@ def main() -> int:
                         repo_id=repo_id, repo_type=kind)
 
     print(f"pushing it{it:03d} from {itd}", flush=True)
-    up(ckpt, f"9x9/it{it:03d}-train.pt", model_repo, "model")
-    up(sp, f"9x9/it{it:03d}-summary.json", model_repo, "model")
+    up(ckpt, f"{args.prefix}/it{it:03d}-train.pt", model_repo, "model")
+    up(sp, f"{args.prefix}/it{it:03d}-summary.json", model_repo, "model")
     tgz = pack_sgfs(itd)
     if tgz:
-        up(tgz, f"9x9/it{it:03d}-gate-sgf.tgz", model_repo, "model")
+        up(tgz, f"{args.prefix}/it{it:03d}-gate-sgf.tgz", model_repo, "model")
     if args.rename:
-        up(ckpt, f"9x9/{args.rename}.pt", model_repo, "model")
-        up(sp, f"9x9/{args.rename}-summary.json", model_repo, "model")
+        up(ckpt, f"{args.prefix}/{args.rename}.pt", model_repo, "model")
+        up(sp, f"{args.prefix}/{args.rename}-summary.json", model_repo, "model")
     lj = root / "loop.jsonl"
     if lj.exists():
-        up(lj, "9x9/loop.jsonl", model_repo, "model")
+        up(lj, f"{args.prefix}/loop.jsonl", model_repo, "model")
     # one unit dir per board size when the round mixes sizes
     shards = ([itd / "selfplay" / "shard-0.spbin"]
               if (itd / "selfplay" / "shard-0.spbin").exists()
               else sorted(itd.glob("sp*/shard-0.spbin")))
     for shard in shards:
         if shard.exists():
-            up(shard, f"9x9/it{it:03d}/{shard.parent.name}/shard-0.spbin",
+            up(shard, f"{args.prefix}/it{it:03d}/{shard.parent.name}/shard-0.spbin",
                data_repo, "dataset")
     print("done")
     return 0

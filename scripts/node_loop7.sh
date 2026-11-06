@@ -20,10 +20,11 @@ export PUCT_WALKERS=4 PUCT_TASKS=6 NN_B=7 NN_BF16=1 NN_COMPILE=1
 export GO_UTIL_LAMBDA=0.8
 export GO_SWITCH_V=0            # fixed blend, no score-phase switch
 export GO_SCORE_FAST_SIMS=0
-# Charge k points per unowned point at a terminal (k=1: value it as if the
-# opponent takes every dame). Colour-blind and monotone, so it penalises
-# whoever ends an unfinished game without rewarding the side that stops.
-export GO_SETTLE_K=1
+# Terminal dame charge: OFF. A/B on a fixed net (it009, 2000 games/board)
+# showed no gain in completeness: dame 5.13 -> 5.27 (7x7), 5.46 -> 5.77
+# (9x9) for W=1, and the point-per-dame form was worse still (7.46 / 7.02).
+# Caps improved slightly (9x9 5.2% -> 4.5%), not worth another knob.
+export GO_SETTLE_W=0
 export GO_ROOT_NOISE_EPS=0
 export NN_WAVE_STATS=1
 WORK=/workspace/go-run-7x7

@@ -22,7 +22,7 @@
 # set from Sabaki's "Arguments" field:  gtp_mac.sh 1000
 set -e
 cd "${0%/*}/.."        # no dirname: Sabaki may spawn us with an empty PATH
-export PUCT_CKPT="${PUCT_CKPT:-$PWD/ckpts/it021.pt}"
+export PUCT_CKPT="${PUCT_CKPT:-$PWD/ckpts/new009.pt}"
 export GO_SIMS="${GO_SIMS:-1000}"
 # MCTS utility = lambda * win/loss + (1 - lambda) * tanh(margin / 2b), the
 # same blend selfplay uses. 1.0 is pure win/loss (plays anything that wins,

@@ -1,4 +1,60 @@
-# resume state (2026-11-04, after it019)
+# resume state (2026-11-06, after the 7x7 lineage, it009)
+
+Run: 7x7-anchored, now 3-board. Work dir /workspace/go-run-7x7 on the
+per-instance box (SSH_HOST/PORT in .env change every provision).
+Everything through it009 is on HF under `7x7/` (both repos).
+
+## where it stands
+best.pt = it009 (cd0f650235ee), gated at it9: 0.623 pooled
+  7x7 0.570 | 9x9 0.620 | 11x11 0.680   (100 games per board)
+it8 gated 0.747 (7x7 0.690 | 9x9 0.720 | 11x11 0.830)
+--gate-min 0.0: every round promotes (cold-start policy). Gate series:
+  1.000 0.995 0.943 0.838 0.705 0.693 0.730 0.747 0.623
+
+Heads at it007 (best score head of the whole project): pol 0.676
+val 0.892 own 0.282 score 7.72     (9x9 trunk was 9.84 at it020)
+
+## selfplay shape (it007, data from it006's net)
+board  plies(b2)  cap   pass/g  dame  |score|
+7x7     57 (49)  1.2%    7.6   2.02    2.5
+9x9     92 (81)  6.2%    9.2   5.92    5.5
+11x11  137 (121) 10.5%  12.5   7.10    7.5
+7x7 is close to done (cap solved, length ~b2, |score| 2.5 = tight games).
+9x9/11x11 lag on completeness (dame 6-7).
+
+## settle rule: OFF (measured, do not re-litigate)
+A/B on one fixed net (it009, 2000 games/board, only the rule differs):
+  rule                 dame 7x7   dame 9x9
+  off (W=0)              5.13       5.46
+  sign-aware W=1         5.27       5.77
+  unconditional (old)    6.16        -      (1000 games)
+  point-per-dame K=1     7.46       7.02
+None helps completeness; it007's dame 2.02 was the net, not the rule.
+It is selfplay-only shaping (the gate runs lambda 1.0), so it cannot show
+in the gate directly. Launcher: GO_SETTLE_W=0. Modes still in the engine
+(GO_SETTLE_W / GO_SETTLE_MODE 1=sign-aware 2=unconditional) if ever needed.
+
+## next round
+node_loop7.sh is set for equal 10k shares:
+  --sizes 7:10000,9:10000,11:10000
+  --gate-games 300 --gate-sizes 7:9.5,9:7.5,11:7.5   (100 per board)
+  GO_UTIL_LAMBDA=0.8  GO_SWITCH_V=0 (fixed blend)  GO_SETTLE_W=0
+  --buffer-keep 0, --gate-min 0.0
+~100 min/round. Launch: bash scripts/node_run7x7_tmux.sh
+New box: scripts/node_provision.sh + node_pip.sh (torch), then rebuild.
+
+## open questions
+- it9 regressed (0.623 vs it8 0.747). Was it the K=1 settle rule (it was on
+  for it8/it9), the 11x11 share, or noise? Next rounds run with W=0, so the
+  series restarts cleanly.
+- 9x9/11x11 dame 6-7 and cap 5-10%: more data or more sims, not a new knob.
+- Data volume beat every knob so far (it023: 2.3x rows -> +47 Elo).
+  --buffer-keep 0.5 is the automatic version and has NOT been tried on this
+  run yet.
+
+---
+
+# history (earlier: 9x9 trunk)
 
 Node: 180.189.55.41:15594, work dir /workspace/go-run-9x9
 it019 (mixed 9/11/13/15) runs until it records (~19:05 UTC); the stopat19

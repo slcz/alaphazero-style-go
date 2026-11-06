@@ -377,18 +377,28 @@ static float blend(double lam, float wdl, double margin, int b) {
                    + (1.0 - lam) * score_term(margin, b));
 }
 
-/* Points charged per unowned point when the game ends: a terminal is valued
- * as if the opponent took every dame (k = 1). Colour-blind and monotone, so
- * it penalises whoever accepts an unfinished board without rewarding the
- * side that benefits from stopping. GO_SETTLE_K = 0 disables. */
-static double g_settle_k = 0.0;
+/* Sign-aware proportionate charge for the dame a terminal leaves behind:
+ * the mover's win is scaled by (1 - w*dame/area) and a loss by
+ * (1 + w*dame/area), so either side sees the terminal as worse than it is
+ * and neither can gain by stopping early. Proportional, so it stays inside
+ * tanh's range and cannot turn a win into a loss. GO_SETTLE_W = 0 disables. */
+static double g_settle_w = 0.0;
+static int    g_settle_mode = 1;     /* 1 sign-aware, 2 unconditional */
 
-void puct_set_settle_k(double k) {
-    g_settle_k = k < 0.0 ? 0.0 : k;
+void puct_set_settle_weight(double w) {
+    g_settle_w = w < 0.0 ? 0.0 : w;
 }
 
-double puct_settle_k(void) {
-    return g_settle_k;
+void puct_set_settle_mode(int m) {
+    g_settle_mode = m == 2 ? 2 : 1;
+}
+
+int puct_settle_mode(void) {
+    return g_settle_mode;
+}
+
+double puct_settle_weight(void) {
+    return g_settle_w;
 }
 
 static int dame_count(const State *st) {
@@ -411,8 +421,14 @@ static float terminal_value(const PuctGame *g, const PuctNode *n,
     float score = 0.0f;
     state_score(st, &score, NULL);
     double margin = (st->side == BLACK) ? score : -score;
-    if (g_settle_k > 0.0)
-        margin -= g_settle_k * (double)dame_count(st);
+    if (g_settle_w > 0.0 && margin != 0.0) {
+        int d = dame_count(st);
+        if (d) {
+            double f = g_settle_w * (double)d / (double)(st->b * st->b);
+            margin *= (g_settle_mode == 2 || margin > 0.0) ? 1.0 - f
+                                                          : 1.0 + f;
+        }
+    }
     return blend(g->util_lambda, wdl, margin, st->b);
 }
 

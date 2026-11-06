@@ -21,7 +21,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 SALAD = REPO / "scripts" / "salad.sh"
-ROOT = "/workspace/go-run-9x9"
+ROOT = "/workspace/go-run-9x9"   # overridden by --work
 
 
 def get(remote: str, local: Path) -> bool:
@@ -56,15 +56,20 @@ def main() -> int:
     ap.add_argument("it", type=int)
     ap.add_argument("--skip-shard", action="store_true",
                     help="skip the games shard (323 MB) if bandwidth-bound")
+    ap.add_argument("--work", default="/workspace/go-run-9x9",
+                    help="remote work dir")
+    ap.add_argument("--prefix", default="9x9",
+                    help="remote directory on both HF repos")
     ap.add_argument("--dir", default=None,
                     help="reuse a previous pull instead of fetching again")
     args = ap.parse_args()
-    itd = f"{ROOT}/it{args.it:03d}"
+    root = args.work
+    itd = f"{root}/it{args.it:03d}"
 
     tmp = Path(args.dir) if args.dir else Path(
         tempfile.mkdtemp(prefix=f"go-pull-{args.it:03d}-"))
     shadow = tmp / f"it{args.it:03d}"
-    print(f"pulling it{args.it:03d} from {ROOT}", flush=True)
+    print(f"pulling it{args.it:03d} from {root}", flush=True)
 
     got = {}
     for name in ("train.pt", "train.json", "eval.json", "train.log"):
@@ -82,7 +87,7 @@ def main() -> int:
     if run(f"tar -czf {tgz_remote} -C {itd} gate-sgf"):
         get(tgz_remote, shadow / "gate-sgf.tgz")
     for name in ("loop.jsonl", "buffer.json"):
-        get(f"{ROOT}/{name}", tmp / name)
+        get(f"{root}/{name}", tmp / name)
 
     if not (shadow / "train.pt").exists():
         print("no checkpoint pulled; aborting", file=sys.stderr)
@@ -94,7 +99,8 @@ def main() -> int:
                HF_HOME=str(REPO / ".hf-cache"))
     rc = subprocess.run([sys.executable,
                          str(REPO / "scripts" / "hf_push_iter.py"),
-                         str(args.it), "--root", str(tmp)], env=env).returncode
+                         str(args.it), "--root", str(tmp),
+                         "--prefix", args.prefix], env=env).returncode
     if rc == 0:
         shutil.rmtree(tmp, ignore_errors=True)
     else:
