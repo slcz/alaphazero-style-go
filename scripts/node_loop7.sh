@@ -6,8 +6,9 @@
 # round would keep the random net as the generator, so the data never
 # improves and the run stalls. Raise this back to ~0.52 once the gate is
 # clearly climbing.
-# Board mix climbs with the run: 15k 7x7 (its own board, still the gate's
-# board), 10k 9x9, 5k 11x11. Same weights, same round.
+# Board mix climbs with the run: equal 10k shares of 7x7, 9x9 and 11x11,
+# same weights in one round. 7x7 is near done (cap 1.2%, dame 2.0) so its
+# share stops growing; 11x11 was the weakest last round (dame 7.1, cap 10%).
 # A fresh work dir means no best.pt, and selfplay_loop then bootstraps from
 # a random-init checkpoint, so nothing from the 9x9/11-15 lineage leaks in.
 # Utility is the FIXED blend lambda 0.8 (no two-phase switch: at 7x7 the
@@ -37,7 +38,7 @@ while true; do
         --b 7 --komi 9.5 \
         --forever \
         --games 30000 \
-        --sizes 7:15000,9:10000,11:5000 \
+        --sizes 7:10000,9:10000,11:10000 \
         --sims 200 --fast-sims 40 --fast-p 0.75 \
         --pool 2048 --rows 4096 \
         --sample-plys 10 --max-plys 250 \
