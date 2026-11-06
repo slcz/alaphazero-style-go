@@ -383,14 +383,15 @@ static float blend(double lam, float wdl, double margin, int b) {
  * and neither can gain by stopping early. Proportional, so it stays inside
  * tanh's range and cannot turn a win into a loss. GO_SETTLE_W = 0 disables. */
 static double g_settle_w = 0.0;
-static int    g_settle_mode = 1;     /* 1 sign-aware, 2 unconditional */
+static int    g_settle_mode = 1;     /* 1 sign-aware, 2 unconditional,
+                                      * 3 separate dame term */
 
 void puct_set_settle_weight(double w) {
     g_settle_w = w < 0.0 ? 0.0 : w;
 }
 
 void puct_set_settle_mode(int m) {
-    g_settle_mode = m == 2 ? 2 : 1;
+    g_settle_mode = (m >= 1 && m <= 3) ? m : 1;
 }
 
 int puct_settle_mode(void) {
@@ -421,6 +422,17 @@ static float terminal_value(const PuctGame *g, const PuctNode *n,
     float score = 0.0f;
     state_score(st, &score, NULL);
     double margin = (st->side == BLACK) ? score : -score;
+    if (g_settle_w > 0.0 && g_settle_mode == 3) {
+        /* score half and dame half, each (1-lambda)/2: the dame term is a
+         * separate bounded cost, so the score keeps its meaning. One dame
+         * is worth one point of margin at the 2b normaliser. */
+        double d = (double)dame_count(st) / (2.0 * (double)st->b);
+        if (d > 1.0)
+            d = 1.0;
+        return (float)(g->util_lambda * (double)wdl
+                       + 0.5 * (1.0 - g->util_lambda) * score_term(margin, st->b)
+                       - 0.5 * (1.0 - g->util_lambda) * d);
+    }
     if (g_settle_w > 0.0 && margin != 0.0) {
         int d = dame_count(st);
         if (d) {
