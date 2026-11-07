@@ -59,6 +59,8 @@ class TrainConfig:
 def pick_device(name: str) -> torch.device:
     if name != "auto":
         return torch.device(name)
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
     if torch.cuda.is_available():
         return torch.device("cuda")
     return torch.device("cpu")
@@ -69,8 +71,8 @@ def resolve_device(name: str) -> str:
     load-time requirement (resuming a CUDA run on the Mac must work)."""
     if name == "cuda" and not torch.cuda.is_available():
         return "auto"
-    if name == "mps":                        # dropped backend: mps -> cpu
-        return "cpu"
+    if name == "mps" and not torch.backends.mps.is_available():
+        return "auto"
     return name
 
 
@@ -309,7 +311,7 @@ class Trainer:
         if dropped:
             print(f"warm start: fresh weights for {dropped}")
         model.load_state_dict(sd, strict=strict and not dropped)
-        # fp8 tensors cannot move off CUDA — ship them fp16:
+        # fp8 tensors cannot move to MPS/CPU backends — ship them fp16:
         # dequantize the FP8 linears and run the whole network fp16
         if payload["net_config"].get("fp8") \
                 and torch.device(cfg.device).type != "cuda":

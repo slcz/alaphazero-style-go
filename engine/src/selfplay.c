@@ -4,7 +4,7 @@
  *
  *   selfplay <ckpt> <out_dir> <games> [b=7] [komi=9.5] [sims=200]
  *            [pool=1024] [rows=2048] [sample_plys=10] [max_plys=150]
- *            [block_mb=4] [device=cpu] [seed=1] [fast_sims=0] [fast_p=0.75]
+ *            [block_mb=4] [device=mps] [seed=1] [fast_sims=0] [fast_p=0.75]
  *
  * device "dummy" runs the stub evaluator (uniform priors, value 0) — the
  * engine-only test path; no net or checkpoint is needed (pass any ckpt).
@@ -148,7 +148,7 @@ int main(int argc, char **argv) {
         fprintf(stderr,
                 "usage: %s <ckpt> <out_dir> <games> [b=7] [komi=9.5]\n"
                 "          [sims=200] [pool=1024] [rows=2048] [sample_plys=10]\n"
-                "          [max_plys=150] [block_mb=4] [device=cpu] [seed=1]\n"
+                "          [max_plys=150] [block_mb=4] [device=mps] [seed=1]\n"
                 "          [fast_sims=0] [fast_p=0.75]\n"
                 "       device \"dummy\" runs the stub evaluator (no net)\n",
                 argv[0]);
@@ -167,7 +167,7 @@ int main(int argc, char **argv) {
         sample_plys = 0;
     max_plys = argc > 10 ? atoi(argv[10]) : 150;
     int block_mb = argc > 11 ? atoi(argv[11]) : 4;
-    const char *device = argc > 12 ? argv[12] : "cpu";
+    const char *device = argc > 12 ? argv[12] : "mps";
     uint64_t seed = argc > 13 ? strtoull(argv[13], NULL, 10) : 1;
     int fast_sims = argc > 14 ? atoi(argv[14]) : 0;
     double fast_p = argc > 15 ? atof(argv[15]) : 0.75;
