@@ -52,14 +52,16 @@ function legalSet() {
     return set;
 }
 
+// GTP vertices match the C convention exactly (go_rules.c): row 1 is
+// the BOTTOM row, move = (row − 1)·b + col
 const toVertex = (move) =>
-    move === PASS ? "pass" : LETTERS[move % b] + (b - (move / b | 0));
+    move === PASS ? "pass" : LETTERS[move % b] + ((move / b | 0) + 1);
 function fromVertex(v) {
     if (v === "pass")
         return PASS;
     const x = LETTERS.indexOf(v[0].toUpperCase());
     const y = parseInt(v.slice(1), 10);
-    return x >= 0 && x < b && y >= 1 && y <= b ? (b - y) * b + x : -1;
+    return x >= 0 && x < b && y >= 1 && y <= b ? (y - 1) * b + x : -1;
 }
 
 // ---- GTP client --------------------------------------------------------

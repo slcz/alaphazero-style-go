@@ -90,12 +90,13 @@ export class Board {
             }
         }
 
-        // stones
+        // stones — index row 0 is GTP row 1 = the BOTTOM row: render it
+        // at the bottom of the canvas (canvas gy runs top-down)
         for (let iy = 0; iy < b; iy++)
             for (let ix = 0; ix < b; ix++) {
                 const s = this.stones[iy * b + ix];
                 if (s)
-                    this.stone(ix, iy, s);
+                    this.stone(ix, b - 1 - iy, s);
             }
 
         // last-move marker
@@ -106,7 +107,8 @@ export class Board {
                 cx.strokeStyle = s === 1 ? "#fff" : "#000";
                 cx.lineWidth = 2;
                 cx.beginPath();
-                cx.arc(this.pad + x * this.cell, this.pad + y * this.cell,
+                cx.arc(this.pad + x * this.cell,
+                       this.pad + (b - 1 - y) * this.cell,
                        this.cell * 0.22, 0, 7);
                 cx.stroke();
             }
