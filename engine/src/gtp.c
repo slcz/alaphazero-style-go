@@ -1,5 +1,5 @@
 /*
- * gtp.c — the GTP front-end (play path; no wasm, no GUI).
+ * gtp.c — the GTP front-end (play path).
  *
  *   gtp [device=mps] [rows=0]      env: PUCT_CKPT (required unless
  *                                       device=dummy), GO_SIMS, GO_MAXPLY
@@ -13,14 +13,24 @@
  * resigns — resignation is the DRIVER's call (the match referee reads
  * the engine's value through the mux protocol, not GTP). Pass is played
  * when the search's best move is pass.
+ *
+ * __EMSCRIPTEN__ (the web GUI): main() is replaced by three exports —
+ * gtp_wasm_init / gtp_exec / gtp_interrupt. gtp_exec runs ONE command
+ * line through the same dispatcher (printf still produces the response,
+ * captured by the worker's print hook), suspending under Asyncify while
+ * JS runs the net. The net evaluator is installed by wasm_glue.c.
  */
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#else
 #define _POSIX_C_SOURCE 200809L
 #include <poll.h>
+#include <unistd.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <unistd.h>
 
 #include "go.h"
 #include "go_nn_eval.h"
@@ -203,6 +213,16 @@ static void do_genmove(char *args, const char *id) {
     respond(id, "%s", v);
 }
 
+#ifdef __EMSCRIPTEN__
+static double mono_s(void) {
+    return emscripten_get_now() / 1000.0;
+}
+
+/* The worker sets this when a GTP line arrived while analyze streams
+ * (Sabaki stops an analysis by sending any command); events run between
+ * the Asyncify suspensions, so the flag is live when we resume. */
+static int g_interrupt;
+#else
 static double mono_s(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -216,6 +236,12 @@ static int stdin_ready(void) {
     struct pollfd p = { .fd = 0, .events = POLLIN };
     return poll(&p, 1, 0) > 0 && (p.revents & (POLLIN | POLLHUP | POLLERR));
 }
+#endif
+
+#ifdef __EMSCRIPTEN__
+static int stdin_ready(void) { return g_interrupt; }
+void gtp_interrupt(void) { g_interrupt = 1; }
+#endif
 
 /* Top-N root children by visits, as index order in `ord`. */
 static int rank_children(const uint32_t *vis, int nc, int *ord, int top) {
@@ -374,79 +400,37 @@ static void do_showstate(const char *id) {
     respond_end();
 }
 
-int main(int argc, char **argv) {
-    const char *device = argc > 1 ? argv[1] : "mps";
-    int rows = argc > 2 ? atoi(argv[2]) : 0;
-    if (rows <= 0)
-        rows = 1024;
-    const char *ckpt = getenv("PUCT_CKPT");
-    const char *senv = getenv("GO_SIMS");
-    const char *menv = getenv("GO_MAXPLY");
-    if (senv && *senv)
-        g_sims = atoi(senv);
-    int maxply = menv && *menv ? atoi(menv) : MAX_PLY;
-
-    go_init();
-    rng_seed(((uint64_t)time(NULL) << 32) ^ (uint64_t)getpid()
-             * 0x9E3779B97F4A7C15ull);
-    const char *ienv = getenv("GO_ANALYZE_INTERVAL");
-    if (ienv && *ienv)
-        g_analyze_interval = atoi(ienv);
-    const char *aenv = getenv("GO_ANALYZE_SIMS");
-    if (aenv && *aenv)
-        g_analyze_sims = atoi(aenv);
-    const char *benv = getenv("GO_BLOCK_MB");
-    if (benv && *benv)
-        g_block_mb = atoi(benv);
-    const char *wenv2 = getenv("PUCT_WALKERS");
-    if (wenv2 && *wenv2)
-        g_walkers = atoi(wenv2);
-    if (game_replant(19, 7.5f, maxply) != 0) {
-        fprintf(stderr, "gtp: game alloc failed\n");
-        return 1;
+/* One GTP line through the dispatcher; returns 1 on quit. The response
+ * goes to stdout either way — the native pipe, or the worker's print
+ * hook in the wasm build. */
+static int gtp_line(char *line) {
+    char *p = line;
+    while (*p == ' ' || *p == '\t')
+        p++;
+    if (*p == '#' || *p == '\n' || !*p)
+        return 0;                       /* comment / empty */
+    char id[16] = {0};
+    char *cmd = p;
+    /* numeric command id */
+    while (*p >= '0' && *p <= '9')
+        p++;
+    if (p > cmd && *p == ' ') {
+        size_t n = (size_t)(p - cmd);
+        if (n >= sizeof id)
+            n = sizeof id - 1;
+        memcpy(id, cmd, n);
+        cmd = ++p;
     }
-    if (strcmp(device, "dummy") != 0) {
-        if (!ckpt || !*ckpt) {
-            fprintf(stderr, "gtp: PUCT_CKPT not set\n");
-            return 2;
-        }
-        if (puct_attach_nn(ckpt, device, rows) != 0) {
-            fprintf(stderr, "gtp: puct_attach_nn failed\n");
-            return 1;
-        }
-    } else {
-        puct_zone_init(rows);
+    char *nl = strchr(cmd, '\n');
+    if (nl)
+        *nl = '\0';
+    char *sp = strchr(cmd, ' ');
+    char *args = NULL;
+    if (sp) {
+        *sp = '\0';
+        args = sp + 1;
     }
-
-    char line[4096];
-    while (fgets(line, sizeof line, stdin)) {
-        char *p = line;
-        while (*p == ' ' || *p == '\t')
-            p++;
-        if (*p == '#' || *p == '\n' || !*p)
-            continue;                    /* comment / empty */
-        char id[16] = {0};
-        char *cmd = p;
-        /* numeric command id */
-        while (*p >= '0' && *p <= '9')
-            p++;
-        if (p > cmd && *p == ' ') {
-            size_t n = (size_t)(p - cmd);
-            if (n >= sizeof id)
-                n = sizeof id - 1;
-            memcpy(id, cmd, n);
-            cmd = ++p;
-        }
-        char *nl = strchr(cmd, '\n');
-        if (nl)
-            *nl = '\0';
-        char *sp = strchr(cmd, ' ');
-        char *args = NULL;
-        if (sp) {
-            *sp = '\0';
-            args = sp + 1;
-        }
-        switch (cmd_index(cmd)) {
+    switch (cmd_index(cmd)) {
         case 0:
             respond(id, "%s", "2");
             break;
@@ -476,7 +460,7 @@ int main(int argc, char **argv) {
             break;
         }
         case 5:
-            return 0;
+            return 1;
         case 6: {
             char *v = strtok(args, " \t\n");
             int b = v ? atoi(v) : 0;
@@ -539,6 +523,84 @@ int main(int argc, char **argv) {
             respond_err(id, "unknown command");
             break;
         }
-    }
     return 0;
 }
+
+#ifndef __EMSCRIPTEN__
+int main(int argc, char **argv) {
+    const char *device = argc > 1 ? argv[1] : "mps";
+    int rows = argc > 2 ? atoi(argv[2]) : 0;
+    if (rows <= 0)
+        rows = 1024;
+    const char *ckpt = getenv("PUCT_CKPT");
+    const char *senv = getenv("GO_SIMS");
+    const char *menv = getenv("GO_MAXPLY");
+    if (senv && *senv)
+        g_sims = atoi(senv);
+    int maxply = menv && *menv ? atoi(menv) : MAX_PLY;
+
+    go_init();
+    rng_seed(((uint64_t)time(NULL) << 32) ^ (uint64_t)getpid()
+        * 0x9E3779B97F4A7C15ull);
+    const char *ienv = getenv("GO_ANALYZE_INTERVAL");
+    if (ienv && *ienv)
+        g_analyze_interval = atoi(ienv);
+    const char *aenv = getenv("GO_ANALYZE_SIMS");
+    if (aenv && *aenv)
+        g_analyze_sims = atoi(aenv);
+    const char *benv = getenv("GO_BLOCK_MB");
+    if (benv && *benv)
+        g_block_mb = atoi(benv);
+    const char *wenv2 = getenv("PUCT_WALKERS");
+    if (wenv2 && *wenv2)
+        g_walkers = atoi(wenv2);
+    if (game_replant(19, 7.5f, maxply) != 0) {
+        fprintf(stderr, "gtp: game alloc failed\n");
+        return 1;
+    }
+    if (strcmp(device, "dummy") != 0) {
+        if (!ckpt || !*ckpt) {
+            fprintf(stderr, "gtp: PUCT_CKPT not set\n");
+            return 2;
+        }
+        if (puct_attach_nn(ckpt, device, rows) != 0) {
+            fprintf(stderr, "gtp: puct_attach_nn failed\n");
+            return 1;
+        }
+    } else {
+        puct_zone_init(rows);
+    }
+
+    char line[4096];
+    while (fgets(line, sizeof line, stdin))
+        if (gtp_line(line))
+            return 0;
+    return 0;
+}
+
+#else   /* __EMSCRIPTEN__: the worker drives the same dispatcher */
+
+int gtp_wasm_init(int b, float komi, int maxply, int sims, int walkers,
+                  int rows, unsigned long long seed) {
+    g_sims = sims;
+    g_walkers = walkers;
+    go_init();
+    rng_seed(seed);
+    if (game_replant(b, komi, maxply) != 0)
+        return -1;
+    puct_zone_init(rows);   /* dummy evaluator until JS installs the net */
+    return 0;
+}
+
+int gtp_exec(const char *line) {
+    static char buf[4096];
+    snprintf(buf, sizeof buf, "%s", line);
+    g_interrupt = 0;        /* the pending command IS the interrupt */
+    return gtp_line(buf);
+}
+
+/* The zone is once-per-process, so the worker inits the engine ONCE at
+ * load; per-game knobs (sims) change here, the rest go through GTP. */
+void gtp_wasm_set_sims(int sims) { g_sims = sims; }
+
+#endif  /* __EMSCRIPTEN__ */

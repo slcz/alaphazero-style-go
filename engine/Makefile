@@ -90,7 +90,48 @@ $(BUILD)/engine_mux: src/engine_mux.c src/nn_eval.c src/match_util.c $(CORE) inc
 $(BUILD):
 	mkdir -p $(BUILD)
 
+# --- wasm build (web GUI; the gui branch) ------------------------------------
+# The whole GTP engine in one module: JS is the net evaluator
+# (wasm_glue.c under Asyncify — the stack suspends inside puct_think
+# while onnxruntime-web runs). Single-threaded WASM: no pthreads, no
+# SharedArrayBuffer, any static host. The worker captures printf via the
+# module's print hook and drives GTP with gtp_exec.
+WASM_DIR    = build/wasm
+EMS        ?= emcc
+WASM_SRCS   = src/gtp.c src/wasm_glue.c $(CORE)
+WASM_FLAGS  = -O2 -std=c11 -Iinclude \
+  -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=createGoEngine -sENVIRONMENT=web,worker,node \
+  -sASYNCIFY=1 -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=192MB \
+  -sMAXIMUM_MEMORY=2GB -sSTACK_SIZE=1MB \
+  -sEXPORTED_FUNCTIONS=_malloc,_free,_gtp_wasm_init,_gtp_exec,_gtp_interrupt,_gtp_wasm_attach_net,_gtp_wasm_set_sims \
+  -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,UTF8ToString,stringToUTF8,HEAPU8,HEAPF32
+
+$(WASM_DIR):
+	mkdir -p $(WASM_DIR)
+
+$(WASM_DIR)/go_engine.js: $(WASM_SRCS) include/go_nn_eval.h Makefile | $(WASM_DIR)
+	$(EMS) -Wall -Wextra $(WASM_FLAGS) $(WASM_SRCS) -o $@
+
+wasm: $(WASM_DIR)/go_engine.js
+
+# The referee worker's rules module: the same FFI surface the Python
+# cffi binding uses (go_game_new/push/board/legal/termination), no
+# search, no net — tiny, instant to instantiate.
+WASM_RULES_FLAGS = -O2 -std=c11 -Iinclude \
+  -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=createGoRules -sENVIRONMENT=web,worker,node \
+  -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=16MB \
+  -sEXPORTED_FUNCTIONS=_malloc,_free,_go_init,_go_game_new,_go_game_free,_go_side,_go_ply,_go_board_size,_go_n_pass,_go_board,_go_legal,_go_push,_go_push_fast,_go_termination,_go_encode \
+  -sEXPORTED_RUNTIME_METHODS=ccall,HEAPU8,HEAPF32,HEAPU16
+
+$(WASM_DIR)/go_rules.js: src/ffi.c src/go_rules.c src/nn_encode.c \
+                        include/go_ffi.h include/go.h include/go_nn.h \
+                        Makefile | $(WASM_DIR)
+	$(EMS) -Wall -Wextra $(WASM_RULES_FLAGS) src/ffi.c src/go_rules.c \
+	       src/nn_encode.c -o $@
+
+wasm-rules: $(WASM_DIR)/go_rules.js
+
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all check clean nn
+.PHONY: all check clean nn wasm wasm-rules

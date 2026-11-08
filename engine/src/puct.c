@@ -34,8 +34,16 @@ enum { WALKERS_DEFAULT = 8 };   /* walkers per game unless puct_set_walkers */
 /* Bank life cycle (guarded by Z.mu): FREE → QUEUED (zone_submit) →
  * IN_QUEUE (pushed) → PULLED (D2H enqueued) → READY (published) → FREE
  * (delivered). Only a FREE bank is staged into. */
+#ifdef __EMSCRIPTEN__
+/* The wasm build is single-threaded: the zone takes no lock there and
+ * zone_submit drives the evaluator inline (see the sync-evaluator note
+ * in go_puct.h — the whole forward happens at PUSH). */
+#define ZONE_LOCK()   ((void)0)
+#define ZONE_UNLOCK() ((void)0)
+#else
 #define ZONE_LOCK()   pthread_mutex_lock(&Z.mu)
 #define ZONE_UNLOCK() pthread_mutex_unlock(&Z.mu)
+#endif
 
 #define BANK_FREE 0
 #define BANK_QUEUED 1
@@ -122,12 +130,21 @@ static void sleep_remap(PuctGame *g, const uint32_t *snap,
             g->walkers[i].idx = new_idx;
 }
 
+#ifdef __EMSCRIPTEN__
+/* wasm has no mmap: the block is plain heap — same contract (a fresh,
+ * writable, freeable region). */
+static void *map_block(size_t bytes) {
+    return aligned_alloc(8, (bytes + 7) & ~(size_t)7);
+}
+static void unmap_block(void *p, size_t bytes) { (void)bytes; free(p); }
+#else
 static void *map_block(size_t bytes) {
     void *p = mmap(NULL, bytes, PROT_READ | PROT_WRITE,
                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     return p == MAP_FAILED ? NULL : p;
 }
 static void unmap_block(void *p, size_t bytes) { (void)bytes; munmap(p, bytes); }
+#endif
 
 /* PUCT_TREE_STATS=1: shape of the live tree at each compaction —
  * width (fanout, visited children) and height (depth stats plus a
@@ -391,7 +408,9 @@ static double prior_of_q(uint16_t q) {   /* prior_q decode */
 
 /* ---- landing zone -------------------------------------------------------- */
 
+#ifndef __EMSCRIPTEN__
 static void *io_main(void *arg);
+#endif
 static void walker_deliver(PuctGame *g, PuctWalker *w);
 
 /* Default evaluator until puct_set_eval swaps in a real one: uniform
@@ -439,7 +458,9 @@ void puct_zone_init(int max_rows) {
     pthread_mutex_init(&Z.mu, NULL);
     pthread_cond_init(&Z.io_cv, NULL);
     pthread_cond_init(&Z.walker_cv, NULL);
+#ifndef __EMSCRIPTEN__
     assert(pthread_create(&Z.io_thread, NULL, io_main, &Z) == 0);
+#endif
 }
 
 void puct_zone_set_buffers(int bank, float *planes, uint8_t *mask,
@@ -457,6 +478,7 @@ void puct_set_eval(PuctEvalFn fn, void *ctx) {
     Z.eval_ctx = ctx;
 }
 
+#ifndef __EMSCRIPTEN__
 /* Work the io thread can act on: a queued or pulled bank, or an
  * in-flight one flagged flush. */
 static bool io_pending(void) {
@@ -468,6 +490,7 @@ static bool io_pending(void) {
     }
     return false;
 }
+#endif  /* !__EMSCRIPTEN__ */
 
 static void bank_eval(PuctEvalOp op, int b, int n) {
     assert(Z.eval);
@@ -475,6 +498,7 @@ static void bank_eval(PuctEvalOp op, int b, int n) {
            Z.banks[b].logp, Z.banks[b].wdl, Z.banks[b].score);
 }
 
+#ifndef __EMSCRIPTEN__
 /* Advance every drivable bank one phase (push → pull → publish); mutex
  * HELD, released around each evaluator call. Results are delivered by
  * the waker (zone_pump), never here. */
@@ -530,6 +554,7 @@ static void *io_main(void *arg) {
     ZONE_UNLOCK();
     return NULL;
 }
+#endif  /* !__EMSCRIPTEN__ */
 
 static bool bank_busy(int b) {
     ZONE_LOCK();
@@ -539,6 +564,18 @@ static bool bank_busy(int b) {
 }
 
 /* Submit a bank for evaluation; its rows stay staged for delivery. */
+#ifdef __EMSCRIPTEN__
+/* Single-threaded: no io thread — the PUSH runs the whole forward
+ * inline (the JS evaluator suspends the stack under Asyncify while the
+ * net runs) and the bank is READY on return; zone_wait then never
+ * sleeps. PULL/WAIT stay no-ops per the sync-evaluator contract. */
+static void zone_submit(int b) {
+    assert(Z.banks[b].used > 0 && Z.banks[b].state == BANK_FREE);
+    Z.banks[b].state = BANK_QUEUED;
+    bank_eval(PUCT_EVAL_PUSH, b, Z.banks[b].used);
+    Z.banks[b].state = BANK_READY;
+}
+#else
 static void zone_submit(int b) {
     ZONE_LOCK();
     assert(Z.banks[b].used > 0 && Z.banks[b].state == BANK_FREE);
@@ -546,6 +583,7 @@ static void zone_submit(int b) {
     pthread_cond_signal(&Z.io_cv);
     ZONE_UNLOCK();
 }
+#endif
 
 /* Block until bank b is READY; a starved waker flags flush to pull it
  * without the peer's push. */

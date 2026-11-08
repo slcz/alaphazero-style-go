@@ -4,10 +4,8 @@
 Two `engine_mux` processes (one per checkpoint, one network each) host
 ALL of a wave's games through their own landing-zone mux, so every phase
 batches all live games on the GPU. Wave 0 gives network A Black in every
-game; wave 1 swaps colors. Openings: the referee plays r uniformly random
-legal point moves per game (r = randint(0, --openings), default 1), then
-the engines think; the engines play argmax unless PUCT_SAMPLE_PLYS is
-set in the environment.
+game; wave 1 swaps colors. Engines sample from policy distribution for
+the first PUCT_SAMPLE_PLYS, then play argmax deterministically.
 
 Resignation is the DRIVER's call (AGENTS.md): when an engine's root value
 exceeds --resign (0.95 default) against it and the game has passed
