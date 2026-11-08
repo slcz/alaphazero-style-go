@@ -89,7 +89,22 @@ async function netRun(n, planesP, maskP, logpP, wdlP, scoreP) {
     }
 }
 
+// One raw eval (the `value` / `analyze` seam). A failure must surface as
+// a nonzero return — puct_nn_raw maps it to "no evaluator" and the GTP
+// command completes — never an unhandled rejection: under Asyncify that
+// would leave gtp_exec suspended forever and wedge the whole worker
+// (every later `play` would queue behind it and stones stop placing).
 async function rawRun(b, planesP, maskP, polP, wdlP, ownP, scoreP) {
+    try {
+        return await rawRunInner(b, planesP, maskP, polP, wdlP, ownP,
+                                 scoreP);
+    } catch (e) {
+        console.warn("rawRun failed — no evaluator:", e?.message ?? e);
+        return 1;
+    }
+}
+
+async function rawRunInner(b, planesP, maskP, polP, wdlP, ownP, scoreP) {
     const planes = new Float32Array(M.HEAPF32.buffer, planesP,
                                      NN_TOKENS * NN_DIM);
     const T = b * b;

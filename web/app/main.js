@@ -60,12 +60,15 @@ referee.onmessage = (ev) => {
     const m = ev.data;
     switch (m.type) {
     case "board":
-        board.set(m.b, m.stones, lastMove, m.side === humanColor);
+        // ghost color: the human's actual color (0 = none), so the
+        // hover stone matches whose turn it is to click
+        board.set(m.b, m.stones, lastMove,
+                  m.side === humanColor ? humanColor : 0);
         myTurn = m.side === humanColor;
         $("ply").textContent = `ply ${m.ply}`;
         break;
     case "new-game":
-        board.set(m.b, new Uint8Array(m.b * m.b), null, m.humanColor === 1);
+        board.set(m.b, new Uint8Array(m.b * m.b), null, m.humanColor);
         $("status").textContent = "new game";
         break;
     case "move":
@@ -88,8 +91,10 @@ referee.onmessage = (ev) => {
         $("status").textContent = "engine ready";
         break;
     case "ep":
-        $("status").textContent =
-            `engine ready — net ${m.net}, webgpu ${m.webgpu}`;
+        $("status").textContent = m.net === "FAILED"
+            ? `engine ready — net FAILED (private repo: add ` +
+              `?hf=<token> to the URL), plays on dummy eval`
+            : `engine ready — net ${m.net}, webgpu ${m.webgpu}`;
         break;
     case "value":
         // the value net's read, black's perspective: bar + numbers
@@ -125,5 +130,7 @@ $("size").onchange = () => {
     // sensible komi defaults per size (the selfplay loop's convention)
     $("komi").value = parseInt($("size").value, 10) === 7 ? "9.5" : "7.5";
 };
-board.b = 0;
+// a default empty 9x9 board on load (instead of a black canvas) —
+// replaced by the referee's snapshot once a game starts
+board.set(9, new Uint8Array(81), null, false);
 engineInit();

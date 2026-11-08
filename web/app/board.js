@@ -35,11 +35,11 @@ export class Board {
         this.b = 0;
     }
 
-    set(b, stones, lastMove, turn) {
+    set(b, stones, lastMove, ghostColor) {
         this.b = b;
         this.stones = stones;          // Uint8Array b*b: 0 empty 1 black 2 white
         this.last = lastMove;
-        this.turn = turn;
+        this.ghostColor = ghostColor;  // hover stone color: 0 none, 1 black, 2 white
         const S = this.cv.width;
         this.pad = S / (b + 1);
         this.cell = (S - 2 * this.pad) / (b - 1);
@@ -80,12 +80,12 @@ export class Board {
                 cx.fill();
             }
 
-        // hover ghost
-        if (this.hover && this.turn) {
+        // hover ghost — the human player's color, half transparent
+        if (this.hover && this.ghostColor) {
             const { x, y } = this.hover;
             if (this.stones[(b - 1 - y) * b + x] === 0) {
                 cx.globalAlpha = 0.5;
-                this.stone(x, y, this.turn);
+                this.stone(x, y, this.ghostColor);
                 cx.globalAlpha = 1;
             }
         }
