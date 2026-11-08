@@ -23,12 +23,22 @@ let myTurn = false;
 // The engine inits ONCE (the eval zone is per-process); New Game only
 // reconfigures — sims via the export, board/komi via GTP from the referee.
 let engineReady = false;
+// Net source: default = the trained net on HF (private repo → the
+// token comes from ?hf=<token> — stored in localStorage after first
+// use) ; ?net=<url-with-{b}> picks any template ; ?net=local uses the
+// bundled random-init assets.
+const params = new URLSearchParams(location.search);
+if (params.get("hf"))
+    localStorage.setItem("hfToken", params.get("hf"));
+const hfToken = localStorage.getItem("hfToken");
+
 const engineInit = () => {
     engine.postMessage({
         type: "init", b: 9, komi: 7.5, sims: 200,
         walkers: 32,          // batch = parked walkers: bigger waves,
         rows: 64,             // fewer evals — GPU dispatch overhead
         seed: 1, maxply: 900, // dominates at tiny batches
+        net: params.get("net"), hfToken,
     });
 };
 

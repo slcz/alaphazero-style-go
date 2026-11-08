@@ -171,11 +171,12 @@ async function onCmd(m) {
         try {
             ortMod = await import(
                 new URL("./ort_session.js", self.location.href).href);
+            ortMod.configure({
+                net: m.net ?? null,
+                hfToken: m.hfToken ?? null,
+            });
             await ortMod.session(m.b);
-            const gpu = !!navigator.gpu &&
-                !!(await navigator.gpu?.requestAdapter?.());
-            post("ep", { webgpu: gpu ? "available" : "absent",
-                         net: "on" });
+            post("ep", { webgpu: "on", net: ortMod.netOrigin });
         } catch (e) {
             console.warn("ort warm-up failed (dummy eval until it works):",
                          e?.message ?? e);

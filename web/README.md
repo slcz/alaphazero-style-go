@@ -58,11 +58,20 @@ helps during development).
 
 ## Notes
 
-- **Real checkpoints**: `scripts/export_onnx.py --ckpt best.pt
-  --sizes 7,9` (fp8 payloads dequantize on export). The checked-in
-  nets are random-init — legal moves, garbage play.
-- **Board size support** costs one exported file per size (18 MB fp32
+- **Net source (default: HuggingFace)**. The GUI loads
+  `…/resolve/main/web/net-{b}.onnx` from `chriszhang01/go-value-net`
+  (currently the it003 export). The repo is private: pass the token
+  once via `?hf=<token>` — main.js stores it in localStorage — or
+  `localStorage.setItem("hfToken", …)`; `?net=local` forces the bundled
+  assets and `?net=<url-with-{b}>` any other template. Publishing a new
+  checkpoint is one command:
+  `python scripts/hf_push_onnx.py <ckpt.pt> 7,9,13,19` (exports,
+  parity-gates, uploads; token from HF_TOKEN or .env).
+- **Real checkpoints**: fp8 payloads dequantize on export; optimizer
+  state referencing the training env's `torch.optim.Muon` is absorbed
+  by a stub. The bundled random-init nets are the fallback only.
+- **Board size support** costs one exported file per size (27 MB fp32
   each, ~7 MB if int8-quantized); the engine, rules, referee and UI
   are size-generic.
 - Perf: WebGPU ≈ sub-second genmove at a few hundred sims; the WASM
-  backend is ~5-10× slower — raise sims with care there.
+  backend is ~3.5× slower — raise sims with care there.
