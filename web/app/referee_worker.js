@@ -78,6 +78,18 @@ const gtpText = async (lineCmd) =>
 // ---- game flow ---------------------------------------------------------
 function side() { return call1("go_side", game); }
 
+// The net's read of the current position (black view): one raw eval
+// through the engine's `value` command. Best effort — no bar on error.
+async function publishValue() {
+    try {
+        const text = await gtpText("value");
+        const m = text.trim().match(/^=\s*([\d.]+) (-?[\d.]+)/);
+        if (m)
+            ui("value", { winrate: parseFloat(m[1]),
+                          score: parseFloat(m[2]) });
+    } catch { /* engine busy or no evaluator: keep the last bar */ }
+}
+
 function adjudicate() {
     // go_termination(g, *score, *ownership): one call returns the term
     // code (TERM_OVER = 1: double pass or the ply wall) and fills score
@@ -127,6 +139,7 @@ async function engineMove(color) {
 async function afterMove() {
     if (over || checkEnd())
         return;
+    await publishValue();
     const s = side();
     if (s !== human) {
         engineBusy = true;

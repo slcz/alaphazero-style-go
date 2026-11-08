@@ -91,6 +91,13 @@ referee.onmessage = (ev) => {
         $("status").textContent =
             `engine ready — net ${m.net}, webgpu ${m.webgpu}`;
         break;
+    case "value":
+        // the value net's read, black's perspective: bar + numbers
+        $("wrfill").style.width = (m.winrate * 100).toFixed(1) + "%";
+        $("wrtext").textContent =
+            `B ${(m.winrate * 100).toFixed(1)}% · ` +
+            `score ${m.score >= 0 ? "+" : ""}${m.score.toFixed(1)}`;
+        break;
     case "stats":
         // the honest numbers: which EP ran, eval count and net time
         $("perf").textContent =

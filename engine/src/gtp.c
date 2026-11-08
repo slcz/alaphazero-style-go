@@ -44,6 +44,9 @@ static const char *GTP_COMMANDS[] = {
     /* analysis: Sabaki probes analyze / kata-analyze / lz-analyze
      * (engines.analyze_commands) and renders `analyze`'s per-move list */
     "analyze", "showstate", "showmem",
+    /* the net's value/score heads for the current position, black view:
+     * "= <pBlackWins> <score margin, points>" — one raw net eval */
+    "value",
 };
 
 static PuctGame *g;
@@ -519,6 +522,21 @@ static int gtp_line(char *line) {
         case 13:
             do_showmem(id);
             break;
+        case 14: {                     /* value — NN heads, black view */
+            float w[2], score_mover = 0.0f;
+            if (puct_nn_raw(puct_state(g), NULL, w, NULL,
+                            &score_mover) != 0) {
+                respond_err(id, "no evaluator");
+                break;
+            }
+            int black_to_move = puct_state(g)->side == BLACK;
+            char payload[48];
+            snprintf(payload, sizeof payload, "%.4f %.2f",
+                     black_to_move ? w[0] : w[1],
+                     black_to_move ? score_mover : -score_mover);
+            respond(id, "%s", payload);
+            break;
+        }
         default:
             respond_err(id, "unknown command");
             break;
