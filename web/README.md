@@ -59,7 +59,7 @@ helps during development).
 ## Notes
 
 - **Net source (default: HuggingFace)**. The GUI loads
-  `…/resolve/main/web/net-{b}.onnx` from `chriszhang01/go-value-net`
+  `…/resolve/main/web/net-{b}.onnx` from `chriszhang01/gonet`
   (currently the it003 export). The repo is private: pass the token
   once via `?hf=<token>` — main.js stores it in localStorage — or
   `localStorage.setItem("hfToken", …)`; `?net=local` forces the bundled

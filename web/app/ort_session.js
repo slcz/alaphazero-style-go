@@ -14,7 +14,7 @@ export let activeEP = "wasm";     // honestly probed, reported by the worker
 // file (/blob/ is the HTML page). The repo is private, so the fetch
 // carries the HF token (passed from the page via ?hf= or localStorage).
 export const DEFAULT_NET =
-    "https://huggingface.co/chriszhang01/go-value-net/resolve/main/web/net-{b}.onnx";
+    "https://huggingface.co/chriszhang01/gonet/resolve/main/web/net-{b}.onnx";
 export let netTemplate = DEFAULT_NET;   // null = bundled local assets
 export let netOrigin = "hf:it003";      // shown in the perf line
 export let hfToken = null;

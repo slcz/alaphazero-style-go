@@ -57,7 +57,7 @@ def main() -> int:
 
     from huggingface_hub import HfApi
     api = HfApi(token=hf_token())
-    repo_id = os.environ.get("HF_MODEL_REPO", "chriszhang01/go-value-net")
+    repo_id = os.environ.get("HF_MODEL_REPO", "chriszhang01/gonet")
 
     with tempfile.TemporaryDirectory() as tmp:
         for b in sizes:
