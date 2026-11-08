@@ -208,8 +208,15 @@ self.onmessage = async (ev) => {
         over = false;
         if (game)
             R.ccall("go_game_free", null, ["number"], [game]);
+        // the ply wall caps at the engine's MAX_PLY (1024): 3·b² would
+        // be 1083 on 19x19 and go_game_new would return NULL
         game = R.ccall("go_game_new", "number",
-                       ["number", "number", "number"], [b, komi, 3 * b * b]);
+                       ["number", "number", "number"],
+                       [b, komi, Math.min(3 * b * b, 1024)]);
+        if (!game) {
+            ui("status", { text: `bad game config b=${b}`, thinking: false });
+            return;
+        }
         await gtpText(`boardsize ${b}`);
         await gtpText(`komi ${komi}`);
         await gtpText("clear_board");
