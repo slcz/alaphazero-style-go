@@ -25,8 +25,10 @@ let myTurn = false;
 let engineReady = false;
 const engineInit = () => {
     engine.postMessage({
-        type: "init", b: 9, komi: 7.5, sims: 200, walkers: 8, rows: 32,
-        seed: 1, maxply: 900,
+        type: "init", b: 9, komi: 7.5, sims: 200,
+        walkers: 32,          // batch = parked walkers: bigger waves,
+        rows: 64,             // fewer evals — GPU dispatch overhead
+        seed: 1, maxply: 900, // dominates at tiny batches
     });
 };
 
@@ -78,6 +80,12 @@ referee.onmessage = (ev) => {
     case "ep":
         $("status").textContent =
             `engine ready — net ${m.net}, webgpu ${m.webgpu}`;
+        break;
+    case "stats":
+        // the honest numbers: which EP ran, eval count and net time
+        $("perf").textContent =
+            `${m.evals} evals · ${m.netMs}ms net (${m.rows} rows, ` +
+            `${m.ep}) · ${m.totalMs}ms total`;
         break;
     case "referee-ready":
         break;                     // the first newGame drives the flow

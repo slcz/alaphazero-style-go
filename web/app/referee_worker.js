@@ -167,6 +167,8 @@ self.onmessage = async (ev) => {
                 ui("engine-ready", {});
             else if (r.type === "ep")
                 ui("ep", r);
+            else if (r.type === "stats")
+                ui("stats", r);
             else if (r.type === "fatal")
                 ui("status", { text: `engine failed: ${r.error}`,
                                thinking: false });

@@ -21,6 +21,9 @@ const queue = [];                 // commands that arrived while busy
 let reqId = 0;
 let gtpPort = self;               // the referee's channel end once bound
 
+// per-genmove eval telemetry: rows evaluated, wall time, EP in use
+const stats = { evals: 0, rows: 0, ms: 0 };
+
 function post(type, obj) {
     gtpPort.postMessage({ type, ...obj });
 }
@@ -42,6 +45,7 @@ function dummyOutputs(n, logpP, wdlP, scoreP) {
 }
 
 async function netRun(n, planesP, maskP, logpP, wdlP, scoreP) {
+    const t0 = performance.now();
     try {
         const planes = new Float32Array(M.HEAPF32.buffer, planesP,
                                          n * NN_TOKENS * NN_DIM);
@@ -78,6 +82,10 @@ async function netRun(n, planesP, maskP, logpP, wdlP, scoreP) {
     } catch (e) {
         console.warn("netRun failed — dummy outputs:", e?.message ?? e);
         dummyOutputs(n, logpP, wdlP, scoreP);
+    } finally {
+        stats.evals++;
+        stats.rows += n;
+        stats.ms += performance.now() - t0;
     }
 }
 
@@ -112,10 +120,16 @@ let curId = null;                // the command whose prints these are
 async function run(line, id) {
     busy = true;
     curId = id;
+    stats.evals = stats.rows = stats.ms = 0;
+    const t0 = performance.now();
     const quit = await M.ccall("gtp_exec", "number", ["string"], [line],
                                { async: true });
     busy = false;
     curId = null;
+    if (stats.evals)
+        post("stats", { id, ep: ortMod?.activeEP ?? "?", evals: stats.evals,
+                        rows: stats.rows, netMs: Math.round(stats.ms),
+                        totalMs: Math.round(performance.now() - t0) });
     post("resp", { id, quit: !!quit });
     if (queue.length) {
         const next = queue.shift();
