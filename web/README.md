@@ -53,28 +53,26 @@ helps during development).
 - `web/app/ort_session.js` — per-size session cache, webgpu→wasm
 - `web/app/board.js`, `web/app/main.js` — canvas board, controls
 - `scripts/export_onnx.py` — checkpoint → per-size ONNX + parity gate
-- `scripts/publish_web_net.py` — export + manifest + GitHub release
-- `web/net/latest.json` — deployed pointer to the newest net (generated)
+- `scripts/hf_push_onnx.py` — export + upload nets/latest.json to HF
 - `web/test/gtp_smoke.mjs` — node: GTP protocol over the dummy engine
 - `web/test/referee_harness.mjs` — node: referee flow, mock engine
 
 ## Notes
 
-- **Net source (default: the latest published net)**. At deploy time
-  the Pages workflow copies the newest `net-*` GitHub release to
-  `web/net/<tag>/net-{b}.onnx` and writes `web/net/latest.json`; the
-  GUI fetches that pointer at load time. Visitors need no token, and a
-  new checkpoint only needs a new release. If the manifest is absent
-  the GUI falls back to
-  `…/resolve/main/web/net-{b}.onnx` on `chriszhang01/gonet` (private:
-  pass `?hf=<token>`, stored in localStorage); `?net=local` forces the
-  bundled random-init assets and `?net=<url-with-{b}>` any other
-  template. Publish a checkpoint with one command:
-  `python scripts/publish_web_net.py <ckpt.pt> --github-release`
-  (exports, parity-gates, writes the manifest, creates the release;
-  add `--hf-repo chriszhang01/gonet` to refresh the HF fallback too).
-  The `sync-net` workflow does the same daily for the newest
-  `itNNN-train.pt` when an `HF_TOKEN` secret is configured.
+- **Net source (default: HuggingFace)**. The GUI loads
+  `…/resolve/main/web/net-{b}.onnx` from `chriszhang01/gonet`; those
+  stable files are overwritten on every publish, so the page always
+  gets the latest export. It first reads `web/latest.json` (same repo)
+  for the checkpoint name and per-size file names, and falls back to
+  `net-{b}.onnx` when the pointer is absent. The model repo is
+  private: pass the token once via `?hf=<token>` — main.js stores it in
+  localStorage — or `localStorage.setItem("hfToken", …)`; `?net=local`
+  forces the bundled random-init assets and `?net=<url-with-{b}>` any
+  other template. Publishing a new checkpoint is one command:
+  `python scripts/hf_push_onnx.py <ckpt.pt> 7,9,13,19` (exports,
+  parity-gates, uploads the nets and `latest.json`; token from
+  HF_TOKEN or .env). **The ONNX files live on HF, not in this repo** —
+  the Pages artifact only contains the GUI + wasm engine.
 - **Real checkpoints**: fp8 payloads dequantize on export; optimizer
   state referencing the training env's `torch.optim.Muon` is absorbed
   by a stub. The bundled random-init nets are the fallback only.

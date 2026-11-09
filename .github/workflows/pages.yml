@@ -3,17 +3,15 @@
 # so the workers' ../../engine/build/wasm imports resolve; the GUI lives
 # at https://slcz.github.io/alaphazero-style-go/web/.
 #
-# The trained net is NOT built here: the newest `net-*` GitHub release
-# (published by scripts/publish_web_net.py) is copied into the site as
-# web/net/<tag>/net-{b}.onnx + web/net/latest.json. The GUI reads that
-# manifest at load time, so a new checkpoint only needs a new release.
+# The net itself is NOT built or stored here: the GUI fetches
+# web/net-{b}.onnx (and the optional web/latest.json pointer) from the
+# HuggingFace model repo at load time. Only the engine + GUI ship in
+# this Pages artifact.
 name: pages
 
 on:
   push:
     branches: [gui, main]
-  release:
-    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -31,40 +29,12 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-        with:
-          # a release tag can predate the current workflow/GUI: always
-          # build the default branch's site
-          ref: ${{ github.event_name == 'release' && github.event.repository.default_branch || github.ref }}
       - name: install emsdk
         uses: mymindstorm/setup-emsdk@v14
         with:
           version: latest
       - name: build wasm engine
         run: make -C engine wasm wasm-rules
-      - name: choose latest web net
-        id: net
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          tag=""
-          if [ "${{ github.event_name }}" = "release" ]; then
-            case "${{ github.event.release.tag_name }}" in
-              net-*) tag="${{ github.event.release.tag_name }}" ;;
-            esac
-          fi
-          if [ -z "$tag" ]; then
-            tag=$(gh release list --repo "$GITHUB_REPOSITORY" \
-              --exclude-drafts --exclude-pre-releases --limit 100 \
-              --json tagName,createdAt \
-              --jq 'map(select(.tagName | startswith("net-")))|sort_by(.createdAt)|last|.tagName // ""')
-          fi
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          if [ -n "$tag" ]; then
-            echo "web net release: $tag"
-          else
-            echo "::warning::no net-* release; the GUI will use its HF/local fallback"
-          fi
       - name: assemble site
         run: |
           mkdir -p site/engine/build
@@ -72,40 +42,6 @@ jobs:
           cp -r engine/build/wasm site/engine/build/wasm
           rm -f site/web/serve.py site/web/build.sh
           touch site/.nojekyll
-      - name: add the latest net release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          NET_TAG: ${{ steps.net.outputs.tag }}
-        run: |
-          set -euo pipefail
-          if [ -z "$NET_TAG" ]; then
-            echo "no net release to add"
-            exit 0
-          fi
-          rel=$(mktemp -d)
-          gh release download "$NET_TAG" --repo "$GITHUB_REPOSITORY" \
-            --pattern latest.json --dir "$rel"
-          dir=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["dir"])' \
-            "$rel/latest.json")
-          case "$dir" in
-            ""|/*|*..*) echo "bad net dir: $dir" >&2; exit 1 ;;
-          esac
-          mkdir -p "site/web/net/$dir"
-          gh release download "$NET_TAG" --repo "$GITHUB_REPOSITORY" \
-            --pattern 'net-*.onnx' --dir "site/web/net/$dir"
-          cp "$rel/latest.json" site/web/net/latest.json
-          python3 - "$dir" <<'PY'
-          import json, pathlib, sys
-          root = pathlib.Path("site/web")
-          m = json.loads((root / "net/latest.json").read_text())
-          assert m["dir"] == sys.argv[1], (m["dir"], sys.argv[1])
-          for b, name in m["files"].items():
-              p = root / "net" / m["dir"] / name
-              if not p.is_file():
-                  sys.exit(f"missing {p}")
-              print(f"  net-{b}.onnx: {p.stat().st_size / 1e6:.1f} MB")
-          print(f"net release {m['release']}: {m['checkpoint']}")
-          PY
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site

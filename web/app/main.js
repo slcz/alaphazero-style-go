@@ -23,11 +23,11 @@ let myTurn = false;
 // The engine inits ONCE (the eval zone is per-process); New Game only
 // reconfigures — sims via the export, board/komi via GTP from the referee.
 let engineReady = false;
-// Net source: default = the latest checkpoint published for the web
-// (web/net/latest.json, written at deploy time); if that is missing it
-// falls back to the trained net on HF (private repo → the token comes
-// from ?hf=<token> — stored in localStorage after first use). A custom
-// ?net=<url-with-{b}> wins, and ?net=local uses the bundled assets.
+// Net source: default = the latest checkpoint on HuggingFace (its
+// web/latest.json pointer, then the stable web/net-{b}.onnx files). The
+// repo is private → the token comes from ?hf=<token> — stored in
+// localStorage after first use. A custom ?net=<url-with-{b}> wins, and
+// ?net=local uses the bundled assets.
 const params = new URLSearchParams(location.search);
 if (params.get("hf"))
     localStorage.setItem("hfToken", params.get("hf"));

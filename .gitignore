@@ -11,8 +11,8 @@ __pycache__/
 *.spbin
 *.pt
 *.onnx
-# web nets are published as GitHub release assets (Pages builds them
-# from the newest net-* release); only the generated pointers live here
+# local ONNX export scratch — the web nets live on HuggingFace and must
+# never be committed here (Pages only ships the GUI + wasm engine)
 web/net/
 /data/
 runs/
