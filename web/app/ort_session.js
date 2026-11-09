@@ -16,7 +16,7 @@ export let activeEP = "wasm";     // honestly probed, reported by the worker
 export const DEFAULT_NET =
     "https://huggingface.co/chriszhang01/gonet/resolve/main/web/net-{b}.onnx";
 export let netTemplate = DEFAULT_NET;   // null = bundled local assets
-export let netOrigin = "hf:it003";      // shown in the perf line
+export let netOrigin = "hf:it023";      // shown in the perf line
 export let hfToken = null;
 
 export function configure(opts) {

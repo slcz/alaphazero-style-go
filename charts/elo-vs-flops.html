@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gogui — accumulated selfplay FLOPs vs ladder Elo</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font: 14px/1.45 system-ui, sans-serif; margin: 0; padding: 24px;
+    background: #20242b; color: #e8e8e8;
+  }
+  h2 { font-size: 17px; margin: 0 0 4px; }
+  .sub { color: #9aa3ad; font-size: 12px; margin: 0 0 10px; max-width: 780px; }
+  .legend button {
+    background: none; border: none; color: #e8e8e8; cursor: pointer;
+    font: inherit; font-size: 12px; padding: 2px 12px 2px 0;
+  }
+  .legend .sw { display: inline-block; width: 10px; height: 10px;
+                border-radius: 50%; margin-right: 5px; }
+  .tooltip {
+    position: absolute; pointer-events: none; opacity: 0; z-index: 10;
+    background: #14171c; color: #e8e8e8; border: 1px solid #3a3f47;
+    border-radius: 6px; padding: 6px 9px; font-size: 12px; max-width: 340px;
+    white-space: pre-line;
+  }
+  svg text.axis-title { fill: #9aa3ad; font-size: 12px; }
+  svg .domain, svg .tick line { stroke: #3a3f47; }
+  svg .tick text { fill: #9aa3ad; font-size: 12px; }
+  svg .grid line { stroke: #2c313a; stroke-width: 1; }
+  .efs-lbl { font-size: 12px; fill: #9aa3ad; }
+</style>
+</head>
+<body>
+  <h2>Accumulated selfplay compute vs ladder Elo</h2>
+  <p class="sub">X = cumulative FLOPs across iterations in ladder order
+  (games × plies/game × sims/ply × FLOPs/forward, parsed from the selfplay
+  shards on HF; game counts ±20%). it023 has no selfplay record — drawn hollow
+  at its predecessor's cumulative total. Elo: chained ladder, 19x19, it001 = 1000.</p>
+  <div class="legend" id="legend"></div>
+  <div id="plot"></div>
+  <div class="tooltip" id="tip"></div>
+<script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+<script>
+const PER_ITER = [
+  { tag: "it000", elo: 0,    gf: 0.0,      games: 0,     plies: 0,   sims: 0,    sizes: "-",          era: "stub"  },
+  { tag: "it002", elo: 1042, gf: 1.6e-6,    games: 4,     plies: 12,  sims: 6.3,  sizes: "9",          era: "stub"  },
+  { tag: "it003", elo: 1840, gf: 340.7,  games: 35688, plies: 105, sims: 88.3, sizes: "9",          era: "plain" },
+  { tag: "it004", elo: 2516, gf: 351.6,  games: 34945, plies: 113, sims: 86.2, sizes: "9",          era: "plain" },
+  { tag: "it005", elo: 2698, gf: 300.4,  games: 35609, plies: 96,  sims: 84.9, sizes: "9",          era: "plain" },
+  { tag: "it006", elo: 2768, gf: 328.8,  games: 35033, plies: 103, sims: 87.9, sizes: "9",          era: "plain" },
+  { tag: "it009", elo: 2932, gf: 157.1,  games: 31092, plies: 60,  sims: 81.9, sizes: "9",          era: "plain" },
+  { tag: "it010", elo: 2932, gf: 167.5,  games: 31032, plies: 60,  sims: 87.7, sizes: "9",          era: "plain" },
+  { tag: "it011", elo: 2713, gf: 291.3,  games: 35887, plies: 96,  sims: 81.7, sizes: "9",          era: "plain" },
+  { tag: "it012", elo: 3028, gf: 239.5,  games: 33444, plies: 73,  sims: 95.4, sizes: "9",          era: "plain" },
+  { tag: "it013", elo: 3042, gf: 191.4,  games: 33145, plies: 72,  sims: 77.9, sizes: "9",          era: "plain" },
+  { tag: "it014", elo: 2801, gf: 200.3,  games: 33561, plies: 71,  sims: 81.3, sizes: "9",          era: "plain" },
+  { tag: "it015", elo: 2759, gf: 186.9,  games: 33233, plies: 70,  sims: 78.1, sizes: "9",          era: "plain" },
+  { tag: "it016", elo: 2959, gf: 181.1,  games: 34489, plies: 66,  sims: 76.7, sizes: "9",          era: "plain" },
+  { tag: "it017", elo: 3275, gf: 353.6,  games: 37483, plies: 73,  sims: 72.8, sizes: "9/11/13/15", era: "mixed" },
+  { tag: "it018", elo: 3516, gf: 473.8,  games: 35542, plies: 93,  sims: 75.8, sizes: "9/11/13/15", era: "mixed" },
+  { tag: "it019", elo: 3697, gf: 515.2,  games: 34515, plies: 98,  sims: 82.2, sizes: "9/11/13/15", era: "mixed" },
+  { tag: "it020", elo: 3409, gf: 200.2,  games: 32849, plies: 74,  sims: 79.8, sizes: "9",          era: "plain" },
+  { tag: "it021", elo: 3833, gf: 443.8,  games: 34705, plies: 87,  sims: 82.4, sizes: "9/11/13/15", era: "mixed" },
+  { tag: "it022", elo: 4015, gf: 372.6,  games: 35066, plies: 81,  sims: 82.3, sizes: "9/11/13/15", era: "mixed" },
+  { tag: "it023", elo: 4057, gf: 0.0,      games: 0,     plies: 0,   sims: 0,    sizes: "-",          era: "none"  },
+  { tag: "it024", elo: 4372, gf: 1027.8, games: 18820, plies: 178, sims: 81.3, sizes: "15/17/19",   era: "big"   },
+  { tag: "it025", elo: 4503, gf: 1132.8, games: 17522, plies: 206, sims: 82.1, sizes: "15/17/19",   era: "big"   },
+  { tag: "it026", elo: 4574, gf: 1175.7, games: 16825, plies: 228, sims: 79.0, sizes: "15/17/19",   era: "big"   }
+];
+let acc = 0;
+const DATA = PER_ITER.map((d) => {
+  acc += d.gf;
+  return { ...d, cum: acc };
+});
+const ERAS = [
+  { key: "stub",  label: "untrained/stub (it000-002)", c: "#8a93a0" },
+  { key: "plain", label: "plain 9x9",         c: "#5b9bd5" },
+  { key: "mixed", label: "mixed 9/11/13/15",  c: "#e8a04c" },
+  { key: "none",  label: "no selfplay record (it023)", c: "#c05070" },
+  { key: "big",   label: "big 15/17/19",      c: "#7ec27e" }
+];
+const off = new Set();
+const legend = d3.select("#legend");
+ERAS.forEach((e) => {
+  legend.append("button").attr("type", "button")
+    .html(`<span class="sw" style="background:${e.c}"></span>${e.label}`)
+    .on("click", () => {
+      off.has(e.key) ? off.delete(e.key) : off.add(e.key);
+      draw();
+    });
+});
+const tip = document.getElementById("tip");
+const fmtTF = (v) => v >= 1000 ? (v / 1000).toFixed(2) + " EFLOP"
+  : v >= 0.1 ? v.toFixed(1) + " PFLOP" : (v * 1e6).toFixed(1) + " GFLOP";
+
+function draw() {
+  const host = document.getElementById("plot");
+  const W = Math.max(360, Math.min(1000, window.innerWidth - 48));
+  const H = Math.round(Math.min(560, Math.max(350, W * 0.62)));
+  host.innerHTML = "";
+  const m = { t: 16, r: 30, b: 58, l: 66 };
+  const svg = d3.select(host).append("svg")
+    .attr("width", W).attr("height", H)
+    .attr("role", "img")
+    .attr("aria-label", "Line chart: cumulative selfplay FLOPs versus ladder Elo, one point per iteration in ladder order");
+  const iw = W - m.l - m.r, ih = H - m.t - m.b;
+  const x = d3.scaleLinear().domain([0, 8500]).range([m.l, m.l + iw]);
+  const y = d3.scaleLinear().domain([0, 4700]).range([m.t + ih, m.t]);
+
+  const xt = [0, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000];
+  const gx = svg.append("g").attr("class", "grid");
+  xt.forEach((d) => gx.append("line")
+    .attr("x1", x(d)).attr("x2", x(d)).attr("y1", m.t).attr("y2", m.t + ih));
+  y.ticks(7).forEach((d) => gx.append("line")
+    .attr("x1", m.l).attr("x2", m.l + iw).attr("y1", y(d)).attr("y2", y(d)));
+
+  svg.append("g").attr("transform", `translate(0,${m.t + ih})`)
+    .call(d3.axisBottom(x).tickValues(xt).tickFormat(d3.format(",")));
+  svg.append("g").attr("transform", `translate(${m.l},0)`)
+    .call(d3.axisLeft(y).tickValues([0, 1000, 2000, 3000, 4000]).tickFormat(d3.format(",")));
+  svg.append("text").attr("class", "axis-title")
+    .attr("x", m.l + iw / 2).attr("y", H - 10).attr("text-anchor", "middle")
+    .text("Accumulated selfplay compute (PFLOP, linear scale)");
+  svg.append("text").attr("class", "axis-title").attr("transform", "rotate(-90)")
+    .attr("x", -(m.t + ih / 2)).attr("y", 18).attr("text-anchor", "middle")
+    .text("Ladder Elo (19x19)");
+  svg.append("rect").attr("x", m.l).attr("y", m.t).attr("width", iw)
+    .attr("height", ih).attr("fill", "none").attr("stroke", "#3a3f47");
+
+  const vis = () => DATA.filter((d) => !off.has(d.era));
+  // the ordering line: through visible points only, in ladder order
+  svg.append("path")
+    .attr("fill", "none").attr("stroke", "#9aa3ad")
+    .attr("stroke-width", 1.5).attr("opacity", 0.55)
+    .attr("d", d3.line()
+      .x((d) => x(d.cum))
+      .y((d) => y(d.elo))
+      .curve(d3.curveMonotoneX)(vis()));
+
+  svg.selectAll("circle.pt").data(DATA).join("circle").attr("class", "pt")
+    .attr("cx", (d) => x(d.cum))
+    .attr("cy", (d) => y(d.elo))
+    .attr("r", 5.5)
+    .attr("fill", (d) => d.era === "none" ? "#20242b"
+                        : ERAS.find((e) => e.key === d.era).c)
+    .attr("stroke", (d) => d.era === "none" ? "#c05070"
+                          : ERAS.find((e) => e.key === d.era).c)
+    .attr("stroke-width", 2)
+    .attr("opacity", (d) => off.has(d.era) ? 0.12 : 1)
+    .style("cursor", "pointer")
+    .on("mousemove", (ev, d) => {
+      tip.style.opacity = 1;
+      tip.innerHTML =
+        `${d.tag} — Elo ${d.elo}\n` +
+        `cumulative ${fmtTF(d.cum)} (+${fmtTF(d.gf)} this iter)\n` +
+        (d.era === "none" ? "no selfplay record (no shard in dataset)"
+         : `${d.games.toLocaleString()} games × ${d.plies} plies × ${d.sims} sims/ply · b=${d.sizes}`);
+      const r = document.body.getBoundingClientRect();
+      tip.style.left = Math.min(ev.clientX - r.left + 14, W - 330) + "px";
+      tip.style.top = (ev.clientY - r.top + 12) + "px";
+    })
+    .on("mouseleave", () => { tip.style.opacity = 0; });
+
+  const DY = { it000: 4, it022: 18, it023: -4, it026: -4 };
+  svg.selectAll("text.lbl").data(
+    DATA.filter((d) => ["it000", "it003", "it019", "it022", "it023", "it026"].includes(d.tag))
+  ).join("text").attr("class", "lbl")
+    .attr("x", (d) => d.tag === "it026" ? x(d.cum) - 9 : x(d.cum) + 9)
+    .attr("y", (d) => y(d.elo) + (DY[d.tag] ?? -9))
+    .attr("text-anchor", (d) => d.tag === "it026" ? "end" : "start")
+    .text((d) => d.tag)
+    .attr("opacity", (d) => off.has(d.era) ? 0.15 : 1);
+}
+draw();
+window.addEventListener("resize", draw);
+</script>
+</body>
+</html>

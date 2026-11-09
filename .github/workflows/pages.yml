@@ -1,0 +1,54 @@
+# pages.yml — build the wasm engine and deploy the web GUI to GitHub
+# Pages. The site root mirrors the repo layout (web/ + engine/build/wasm/)
+# so the workers' ../../engine/build/wasm imports resolve; the GUI lives
+# at https://slcz.github.io/go/web/.
+#
+# The net itself is NOT built here: the GUI fetches web/net-{b}.onnx from
+# the (private) HF gonet repo with a ?hf=<token> — publish those exports
+# or pass ?net=local for the bundled random-init assets (not built here).
+name: pages
+
+on:
+  push:
+    branches: [gui, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install emscripten
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y emscripten
+      - name: build wasm engine
+        run: make -C engine wasm wasm-rules
+      - name: assemble site
+        run: |
+          mkdir -p site/engine/build
+          cp -r web site/web
+          cp -r engine/build/wasm site/engine/build/wasm
+          rm -f site/web/serve.py
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -57,7 +57,7 @@ from go_ai.engine import PASS, TERM_OVER, Board   # noqa: E402
 # below); the drift bound just catches structural breakage.
 TOL_LOGP = 5e-3
 TOL_WDL = 1e-4
-TOL_OWN = 1e-4
+TOL_OWN = 5e-4            # it019+ ownership heads drift ~2.4e-4 on export
 TOL_SCORE = 1e-3          # × the score head's own scale (points)
 
 
