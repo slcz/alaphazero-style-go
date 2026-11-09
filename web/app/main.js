@@ -23,10 +23,11 @@ let myTurn = false;
 // The engine inits ONCE (the eval zone is per-process); New Game only
 // reconfigures — sims via the export, board/komi via GTP from the referee.
 let engineReady = false;
-// Net source: default = the trained net on HF (private repo → the
-// token comes from ?hf=<token> — stored in localStorage after first
-// use) ; ?net=<url-with-{b}> picks any template ; ?net=local uses the
-// bundled random-init assets.
+// Net source: default = the latest checkpoint published for the web
+// (web/net/latest.json, written at deploy time); if that is missing it
+// falls back to the trained net on HF (private repo → the token comes
+// from ?hf=<token> — stored in localStorage after first use). A custom
+// ?net=<url-with-{b}> wins, and ?net=local uses the bundled assets.
 const params = new URLSearchParams(location.search);
 if (params.get("hf"))
     localStorage.setItem("hfToken", params.get("hf"));
@@ -92,9 +93,11 @@ referee.onmessage = (ev) => {
         break;
     case "ep":
         $("status").textContent = m.net === "FAILED"
-            ? `engine ready — net FAILED (private repo: add ` +
-              `?hf=<token> to the URL), plays on dummy eval`
-            : `engine ready — net ${m.net}, webgpu ${m.webgpu}`;
+            ? `engine ready — net FAILED (${m.error ?? "no web net"}), ` +
+              `plays on dummy eval`
+            : `engine ready — net ${m.net}` +
+              (m.checkpoint ? ` (${m.checkpoint})` : "") +
+              `, webgpu ${m.webgpu}`;
         break;
     case "value":
         // the value net's read, black's perspective: bar + numbers

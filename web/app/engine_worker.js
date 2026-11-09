@@ -191,11 +191,13 @@ async function onCmd(m) {
                 hfToken: m.hfToken ?? null,
             });
             await ortMod.session(m.b);
-            post("ep", { webgpu: "on", net: ortMod.netOrigin });
+            post("ep", { webgpu: "on", net: ortMod.netOrigin,
+                         checkpoint: ortMod.netCheckpoint });
         } catch (e) {
             console.warn("ort warm-up failed (dummy eval until it works):",
                          e?.message ?? e);
-            post("ep", { webgpu: "unknown", net: "FAILED" });
+            post("ep", { webgpu: "unknown", net: "FAILED",
+                         error: e?.message ?? String(e) });
         }
         return;
     }

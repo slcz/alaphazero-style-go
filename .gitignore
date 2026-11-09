@@ -11,12 +11,17 @@ __pycache__/
 *.spbin
 *.pt
 *.onnx
+# web nets are published as GitHub release assets (Pages builds them
+# from the newest net-* release); only the generated pointers live here
+web/net/
 /data/
 runs/
 *.log
 ckpts/
 
-# local secrets and run scratch (never commit)
+# local scratch (never commit)
+.DS_Store
+*.swp
 .env
 .pushed/
 t/

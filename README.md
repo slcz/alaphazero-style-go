@@ -4,8 +4,9 @@ An AlphaZero-style go engine that improves by playing against itself.
 The engine is built around a small 8-layer transformer neural network
 (~6.7M parameters). The engine is trying to be simple to understand
 and fast to train and yet deliver reasonable performance. You can try
-a trained network checkpoint in the [web](https://slcz.github.io/go/web/) —
-it loads the latest checkpoint by default.
+a trained network checkpoint in the
+[web](https://slcz.github.io/alaphazero-style-go/web/) — it loads the
+latest published checkpoint (currently it026) by default.
 
 Like Alpha zero, the network has a value head that outputs a board
 value and policy head that outputs the probability distribution over
