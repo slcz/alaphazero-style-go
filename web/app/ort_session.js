@@ -12,9 +12,9 @@ export let activeEP = "wasm";     // honestly probed, reported by the worker
 // The net lives on HuggingFace, never in this repo. The stable
 // `web/net-{b}.onnx` files are overwritten on every publish, so the GUI
 // always loads the newest export; `web/latest.json` is an optional
-// pointer written by scripts/hf_push_onnx.py that names the checkpoint
-// (and can carry per-size file names). The model repo is public; a
-// private fork can pass ?hf=<token> once.
+// pointer in the model repo that names the checkpoint (and can carry
+// per-size file names). The model repo is public; a private fork can
+// pass ?hf=<token> once.
 export const DEFAULT_NET =
     "https://huggingface.co/chriszhang01/gonet/resolve/main/web/net-{b}.onnx";
 export const MANIFEST_URL =

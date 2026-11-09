@@ -37,7 +37,7 @@ controls             own go_rules wasm          (gtp.c, unmodified
 ## Run it
 
 ```sh
-web/build.sh                     # wasm + nets (~1 min)
+web/build.sh                     # wasm engine (~1 min)
 python3 web/serve.py             # http://127.0.0.1:8642/web/
 ```
 
@@ -52,8 +52,6 @@ helps during development).
 - `web/app/referee_worker.js` — the match controller (its own thread)
 - `web/app/ort_session.js` — per-size session cache, webgpu→wasm
 - `web/app/board.js`, `web/app/main.js` — canvas board, controls
-- `scripts/export_onnx.py` — checkpoint → per-size ONNX + parity gate
-- `scripts/hf_push_onnx.py` — export + upload nets/latest.json to HF
 - `web/test/gtp_smoke.mjs` — node: GTP protocol over the dummy engine
 - `web/test/referee_harness.mjs` — node: referee flow, mock engine
 
@@ -67,16 +65,10 @@ helps during development).
   `net-{b}.onnx` when the pointer is absent. The model repo is public,
   so visitors need no token; if you keep a private fork, pass the token
   once via `?hf=<token>` — main.js stores it in localStorage — or
-  `localStorage.setItem("hfToken", …)`. `?net=local` forces the bundled
-  random-init assets and `?net=<url-with-{b}>` any other template.
-  Publishing a new checkpoint is one command:
-  `python scripts/hf_push_onnx.py <ckpt.pt> 7,9,13,19` (exports,
-  parity-gates, uploads the nets and `latest.json`; token from
-  HF_TOKEN or .env). **The ONNX files live on HF, not in this repo** —
-  the Pages artifact only contains the GUI + wasm engine.
-- **Real checkpoints**: fp8 payloads dequantize on export; optimizer
-  state referencing the training env's `torch.optim.Muon` is absorbed
-  by a stub. The bundled random-init nets are the fallback only.
+  `localStorage.setItem("hfToken", …)`. `?net=local` uses locally built
+  assets and `?net=<url-with-{b}>` any other template. **The ONNX files
+  live on HF, not in this repo** — the Pages artifact only contains the
+  GUI + wasm engine.
 - **Board size support** costs one exported file per size (27 MB fp32
   each, ~7 MB if int8-quantized); the engine, rules, referee and UI
   are size-generic.

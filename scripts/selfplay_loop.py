@@ -329,7 +329,7 @@ def gate(args, candidate: Path, best: Path, eval_json: Path) -> float | None:
         wave = games // 2
         j = eval_json.with_name(f"{eval_json.stem}-{b}x{b}.json")
         lp = j.with_suffix(".log")
-        cmd = [sys.executable, "scripts/gate_match.py",
+        cmd = [sys.executable, "scripts/batch_match.sh",
                "--ckpt-a", str(candidate), "--ckpt-b", str(best),
                "--games", str(wave),
                "--a-sims", str(args.gate_sims),

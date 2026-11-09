@@ -31,6 +31,16 @@ from go_ai.engine import PASS, TERM_OVER, Board
 
 DRIVER = REPO / "engine" / "build" / "engine_mux"
 
+LETTERS = "abcdefghijklmnopqrstuvwxyz"   # plain index; GTP's no-i skip
+                                         # is display-only
+
+
+def sgf_pt(move: int, b: int) -> str:
+    if move == PASS:
+        return ""
+    y, x = divmod(move, b)
+    return LETTERS[x] + LETTERS[b - 1 - y]
+
 
 class Engine:
     """One engine_mux process = one network hosting all of a wave's games."""
@@ -105,7 +115,6 @@ def phase(eng, sims, games, boards, moves, sent):
 
 def _gate_sgf(sgf_dir, wave, gid, args, mvs, a_is_black, winner, score):
     """One SGF per game: player names carry the checkpoint basenames."""
-    from shard_to_sgf import sgf_pt
     name_a = Path(args.ckpt_a).parent.name + "/" + Path(args.ckpt_a).name
     name_b = Path(args.ckpt_b).parent.name + "/" + Path(args.ckpt_b).name
     pb, pw = (name_a, name_b) if a_is_black else (name_b, name_a)

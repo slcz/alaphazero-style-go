@@ -1,9 +1,9 @@
 #!/bin/sh
-# web/build.sh — build everything the GUI serves: the two wasm modules
-# (engine + rules) and the per-size ONNX nets. Run from anywhere.
+# web/build.sh — build the two wasm modules the GUI serves (engine +
+# rules). The ONNX nets are loaded from HuggingFace at runtime, so they
+# are not built here. Run from anywhere.
 #
-#   deps: emsdk (~/dev/emsdk), python with torch+onnx+onnxruntime
-#         (the chessgui venv works: ~/chessgui/.venv)
+#   deps: emsdk (~/dev/emsdk)
 set -e
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 
@@ -12,12 +12,6 @@ command -v emcc >/dev/null || { echo "emcc not found (emsdk at ~/dev/emsdk?)"; e
 
 make -C "$ROOT/engine" wasm wasm-rules
 
-PY=${PY:-$HOME/chessgui/.venv/bin/python}
-# bundled fallback nets (?net=local); the site itself loads the latest
-# published release via web/net/latest.json, which publish_web_net.py
-# generates from a real checkpoint
-"$PY" "$ROOT/scripts/export_onnx.py" --random --sizes 7,9,13,19
-
 echo "built:"
-ls -la "$ROOT/engine/build/wasm/" "$ROOT/web/assets/net/"
+ls -la "$ROOT/engine/build/wasm/"
 echo "serve locally: python3 web/serve.py  → http://127.0.0.1:8642/web/"

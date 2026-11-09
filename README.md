@@ -5,10 +5,7 @@ The engine is built around a small 8-layer transformer neural network
 (~6.7M parameters). The engine is trying to be simple to understand
 and fast to train and yet deliver reasonable performance. You can try
 a trained network checkpoint in the
-[web](https://slcz.github.io/alaphazero-style-go/web/) — it loads the
-latest checkpoint
-([currently it026](https://huggingface.co/chriszhang01/gonet/blob/main/checkpoints/it026-train.pt))
-from HuggingFace by default.
+[web](https://slcz.github.io/alaphazero-style-go/web/).
 
 Like Alpha zero, the network has a value head that outputs a board
 value and policy head that outputs the probability distribution over
@@ -117,7 +114,7 @@ macOS, use `--device mps`.
 To run 100 matches (50 black, 50 white for each checkpoint), in batch
 mode between 2 checkpoints,
 ```sh
-python scripts/batch_match.py --ckpt-a a.pt --ckpt-b b.pt --games 50 \
+python scripts/batch_match.sh --ckpt-a a.pt --ckpt-b b.pt --games 50 \
     --b 19 --device cuda
 ```
 
