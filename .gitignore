@@ -11,9 +11,6 @@ __pycache__/
 *.spbin
 *.pt
 *.onnx
-# local ONNX export scratch — the web nets live on HuggingFace and must
-# never be committed here (Pages only ships the GUI + wasm engine)
-web/net/
 /data/
 runs/
 *.log
