@@ -42,6 +42,12 @@ jobs:
           cp -r engine/build/wasm site/engine/build/wasm
           rm -f site/web/serve.py site/web/build.sh
           touch site/.nojekyll
+          # the site root is the repo root; the GUI lives at /web/
+          cat > site/index.html <<'EOF'
+          <!doctype html>
+          <meta http-equiv="refresh" content="0; url=./web/">
+          <a href="./web/">gogui</a>
+          EOF
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site

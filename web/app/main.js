@@ -24,8 +24,8 @@ let myTurn = false;
 // reconfigures — sims via the export, board/komi via GTP from the referee.
 let engineReady = false;
 // Net source: default = the latest checkpoint on HuggingFace (its
-// web/latest.json pointer, then the stable web/net-{b}.onnx files). The
-// repo is private → the token comes from ?hf=<token> — stored in
+// web/latest.json pointer, then the stable web/net-{b}.onnx files). A
+// private fork can supply a token via ?hf=<token> — stored in
 // localStorage after first use. A custom ?net=<url-with-{b}> wins, and
 // ?net=local uses the bundled assets.
 const params = new URLSearchParams(location.search);

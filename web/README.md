@@ -64,11 +64,12 @@ helps during development).
   stable files are overwritten on every publish, so the page always
   gets the latest export. It first reads `web/latest.json` (same repo)
   for the checkpoint name and per-size file names, and falls back to
-  `net-{b}.onnx` when the pointer is absent. The model repo is
-  private: pass the token once via `?hf=<token>` — main.js stores it in
-  localStorage — or `localStorage.setItem("hfToken", …)`; `?net=local`
-  forces the bundled random-init assets and `?net=<url-with-{b}>` any
-  other template. Publishing a new checkpoint is one command:
+  `net-{b}.onnx` when the pointer is absent. The model repo is public,
+  so visitors need no token; if you keep a private fork, pass the token
+  once via `?hf=<token>` — main.js stores it in localStorage — or
+  `localStorage.setItem("hfToken", …)`. `?net=local` forces the bundled
+  random-init assets and `?net=<url-with-{b}>` any other template.
+  Publishing a new checkpoint is one command:
   `python scripts/hf_push_onnx.py <ckpt.pt> 7,9,13,19` (exports,
   parity-gates, uploads the nets and `latest.json`; token from
   HF_TOKEN or .env). **The ONNX files live on HF, not in this repo** —

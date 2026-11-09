@@ -12,9 +12,9 @@ every publish, so the page always loads the newest export.
     HF_TOKEN=... python scripts/hf_push_onnx.py ckpts/it026.pt \
         --checkpoint-url https://huggingface.co/chriszhang01/gonet/blob/main/checkpoints/it026-train.pt
 
-Token: HF_TOKEN env or the repo's .env (HF_TOKEN=...). The repo is
-private, so GUI users pass the token once via ?hf=<token> (stored in
-localStorage), or the repo has to be made public.
+Token: HF_TOKEN env or the repo's .env (HF_TOKEN=...). The model repo
+is public, so GUI visitors need no token; a private fork can still use
+?hf=<token> (stored in localStorage).
 
 No ONNX is stored in the GitHub repo: GitHub Pages only serves the GUI
 and the wasm engine.

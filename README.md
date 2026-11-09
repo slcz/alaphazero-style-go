@@ -6,9 +6,9 @@ The engine is built around a small 8-layer transformer neural network
 and fast to train and yet deliver reasonable performance. You can try
 a trained network checkpoint in the
 [web](https://slcz.github.io/alaphazero-style-go/web/) — it loads the
-latest checkpoint (currently it026) from HuggingFace by default. The
-model repo is private, so append `?hf=<token>` to the page URL to load
-the net (or `?net=local` for the bundled random-init fallback).
+latest checkpoint
+([currently it026](https://huggingface.co/chriszhang01/gonet/blob/main/checkpoints/it026-train.pt))
+from HuggingFace by default.
 
 Like Alpha zero, the network has a value head that outputs a board
 value and policy head that outputs the probability distribution over
