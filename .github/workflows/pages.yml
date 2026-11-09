@@ -27,10 +27,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: install emscripten
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y emscripten
+      - name: install emsdk
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: latest
       - name: build wasm engine
         run: make -C engine wasm wasm-rules
       - name: assemble site
