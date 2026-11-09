@@ -104,9 +104,8 @@ def setup(ckpt: str, device: str, rows: int, banks: int = 1) -> dict:
     # size) enables the fast path: one graph per size, waves always run
     # at the full padded row count (tail rows are stale, sliced off on
     # read-back). Without NN_B (GTP: sizes vary at runtime) the model
-    # stays bf16 with a dynamic-batch compile. NN_COMPILE=0 disables.
-    static = cuda and int(os.environ.get("NN_B", "0")) > 0 \
-        and os.environ.get("NN_COMPILE", "1") == "1"
+    # stays bf16 with a dynamic-batch compile.
+    static = cuda and int(os.environ.get("NN_B", "0")) > 0
     if static:
         from go_ai.net.model import to_fp8_
         to_fp8_(model)
@@ -121,13 +120,10 @@ def setup(ckpt: str, device: str, rows: int, banks: int = 1) -> dict:
                                                     dtype=torch.bfloat16):
             model(s["xd"][:, :T], s["md"][:, :T + 1])  # compile warm
             torch.cuda.synchronize()
-    elif cuda and os.environ.get("NN_COMPILE", "1") == "1":
+    elif cuda:
         model = torch.compile(model, dynamic=True)   # variable batch n
     _S.update(model=model, device=device, cuda=cuda, sets=sets,
-              rows_cap=rows,
-              static=static, bf16=os.environ.get("NN_BF16", "1") == "1",
-              adtype=(torch.float16 if os.environ.get("NN_AUTOCAST") == "fp16"
-                      else torch.bfloat16))
+              rows_cap=rows, static=static, bf16=True)
     return out
 
 
@@ -149,7 +145,7 @@ def raw(planes: bytes, mask: bytes, b: int) -> tuple:
     md = torch.from_numpy(np.repeat(m[None, :T + 1], n, 0)).to(_S["device"])
     with torch.inference_mode():
         if _S["cuda"] and _S.get("bf16", True):
-            with torch.autocast("cuda", dtype=_S["adtype"]):
+            with torch.autocast("cuda", dtype=torch.bfloat16):
                 out = _S["model"](xd, md)
         else:
             out = _S["model"](xd, md)
@@ -209,7 +205,7 @@ def push(bank: int, n: int) -> int:
             if _S.get("static"):
                 # padded full-width wave; tail rows are stale, sliced
                 # off at read-back below
-                with torch.autocast("cuda", dtype=_S["adtype"]):
+                with torch.autocast("cuda", dtype=torch.bfloat16):
                     out = _S["model"](s["xd"][:, :T],
                                       s["md"][:, :T + 1])
                 s["polf"][:n].zero_()
@@ -221,7 +217,7 @@ def push(bank: int, n: int) -> int:
                 _S["ev_fwd"][bank].record(_S["s_compute"])
                 return n
             if _S.get("bf16", True):
-                with torch.autocast("cuda", dtype=_S["adtype"]):
+                with torch.autocast("cuda", dtype=torch.bfloat16):
                     out = _S["model"](s["xd"][:n, :T], s["md"][:n, :b * b + 1])
             else:
                 out = _S["model"](s["xd"][:n, :T], s["md"][:n, :b * b + 1])

@@ -1,8 +1,7 @@
 /* puct.c — RPO MCTS + multi-game batching (go_puct.h), ported from the
  * chess engine: pi-bar search (Grill et al. 2020), mmap'd node blocks
  * with compaction, double-banked landing zone + io thread, walkers, and
- * the multi-game mux. Game-specific seams only: go.h rules, go_nn.h
- * encoder, go_policy_slot, TT terminals. No wasm paths — native only. */
+ * the multi-game mux. */
 #ifndef _DEFAULT_SOURCE
 #define _DEFAULT_SOURCE
 #endif
@@ -92,8 +91,6 @@ struct PuctGame {
     uint32_t   used;
     uint32_t   root;
     float      cpuct;
-    float     *noise;      /* MAX_MOVES: cached Dirichlet draw for the root */
-    uint64_t   noise_key;  /* poskey the draw belongs to (0 = none) */
     uint64_t   rng;        /* per-game sampling stream, re-keyed at every
                               fresh think */
     uint32_t   oom;
@@ -687,56 +684,8 @@ typedef double v4d __attribute__((vector_size(32)));   /* gcc and clang */
 static int node_pi_bar(const PuctGame *g, const PuctNode *r,
                        uint16_t *moves, float *pi, int cap);
 
-/* One uniform in [0,1) from a caller-owned splitmix64 stream (the same
- * math as rng_next_stream, which only returns the raw word). */
-static double stream_uniform(uint64_t *st) {
-    return (double)(rng_next_stream(st) >> 11) * (1.0 / 9007199254740992.0);
-}
-
-/* Gamma(alpha) by Marsaglia-Tsang, with the alpha<1 boost. Only used for
- * the root Dirichlet draw, so the per-sample cost is irrelevant. */
-static double rng_gamma(uint64_t *st, double alpha) {
-    if (alpha < 1.0) {
-        double u = stream_uniform(st);
-        return rng_gamma(st, alpha + 1.0) * pow(u, 1.0 / alpha);
-    }
-    double d = alpha - 1.0 / 3.0, c = 1.0 / sqrt(9.0 * d);
-    for (;;) {
-        /* Box-Muller from two uniforms: no shared state to contend on */
-        double u1 = stream_uniform(st), u2 = stream_uniform(st);
-        if (u1 < 1e-300)
-            u1 = 1e-300;
-        double r = sqrt(-2.0 * log(u1));
-        double x = r * cos(6.283185307179586 * u2);
-        double v = 1.0 + c * x;
-        if (v <= 0.0)
-            continue;
-        v = v * v * v;
-        double u = stream_uniform(st);
-        if (u < 1.0 - 0.0331 * x * x * x * x)
-            return d * v;
-        if (log(u) < 0.5 * x * x + d * (1.0 - v + log(v)))
-            return d * v;
-    }
-}
-
-/* Dirichlet noise mixed into the ROOT priors: alphaZero-style exploration,
- * using KataGo's convention of a TOTAL concentration spread over the legal
- * moves (rootDirichletNoiseTotalConcentration = 10.83, weight 0.25). Per
- * move that is ~0.03 on 19x19 and ~0.13 on 9x9, so the same setting means
- * the same thing at every board size. eps = 0 disables. Selfplay-only. */
-static double g_noise_eps = 0.0, g_noise_total = 10.83;
-
-void puct_set_root_noise(double eps, double total) {
-    g_noise_eps = eps < 0.0 ? 0.0 : eps > 1.0 ? 1.0 : eps;
-    if (total > 0.0)
-        g_noise_total = total;
-}
-
-double puct_root_noise_eps(void) { return g_noise_eps; }
-
 /* SEARCH (Grill et al. 2020): the descending move is sampled from
- * pi-bar — no deterministic PUCT path, no root noise. Returns the
+ * pi-bar — no deterministic PUCT path. Returns the
  * sampled EDGE index into n's child array. */
 static uint32_t select_child(PuctGame *g, const PuctNode *n) {
     uint16_t mv[MAX_MOVES];
@@ -754,34 +703,6 @@ static uint32_t select_child(PuctGame *g, const PuctNode *n) {
 
 /* Fill the parked leaf's real priors: softmax over the row's logp at
  * each child edge's policy slot. */
-/* Mix Dirichlet(alpha) noise into a node's stored priors, aZero style:
- * p <- (1-eps) p + eps x. Applied to the ROOT only, once per root, so the
- * exploration is fresh on every ply without touching deeper priors. */
-static void noise_priors(PuctGame *g, PuctNode *n) {
-    if (g_noise_eps <= 0.0 || n->n_children < 2)
-        return;
-    PuctEdge *E = kids_of(g, n);
-    int nc = (int)n->n_children;
-    double x[MAX_MOVES], sum = 0.0;
-    double alpha = g_noise_total / (double)nc;   /* per-move */
-    for (int i = 0; i < nc; i++) {
-        x[i] = rng_gamma(&g->rng, alpha);
-        sum += x[i];
-    }
-    if (!(sum > 0.0))
-        return;
-    double tot = 0.0, p[MAX_MOVES];
-    for (int i = 0; i < nc; i++) {
-        p[i] = (1.0 - g_noise_eps) * prior_of_q(E[i].prior_q)
-             + g_noise_eps * (x[i] / sum);
-        tot += p[i];
-    }
-    if (!(tot > 0.0))
-        return;
-    for (int i = 0; i < nc; i++)          /* renormalize after the blend */
-        E[i].prior_q = (uint16_t)(p[i] / tot * 65535.0 + 0.5);
-}
-
 static void fill_priors(PuctGame *g, uint32_t idx, const float *logp,
                         const State *st) {
     PuctNode *n = node_at(g, idx);
@@ -800,8 +721,6 @@ static void fill_priors(PuctGame *g, uint32_t idx, const float *logp,
             (uint16_t)(exp((double)logp[slots[i]] - max) / sum * 65535.0
                        + 0.5);
     n->flags &= ~(uint8_t)PUCT_PENDING;
-    if (idx == g->root)                  /* fresh root: explore it */
-        noise_priors(g, n);
 }
 
 /* Backup: W and one visit land on every path node; nothing is counted
@@ -1053,7 +972,6 @@ int puct_play(PuctGame *g, Move m) {
     g->root = nr;
     node_at(g, nr)->parent = 0;
     g->done_key = 0;
-    noise_priors(g, node_at(g, nr));     /* the new root is a new position */
     return 0;
 }
 

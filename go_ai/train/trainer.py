@@ -171,20 +171,9 @@ class Trainer:
             else:
                 aux_loss = torch.zeros((), device=self.device)
 
-            # ownership/score labels exist only in selfplay (human games
-            # end by resignation — no scoring position); absent keys skip
-            # the loss, so the supervised phase trains policy/value/aux
-            # only and the heads ride along untrained
-            if "own" in batch:
-                own_loss = F.binary_cross_entropy_with_logits(
-                    out["own"], batch["own"])
-            else:
-                own_loss = torch.zeros((), device=self.device)
-
-            if "score" in batch:
-                score_loss = F.smooth_l1_loss(out["score"], batch["score"])
-            else:
-                score_loss = torch.zeros((), device=self.device)
+            own_loss = F.binary_cross_entropy_with_logits(
+                out["own"], batch["own"])
+            score_loss = F.smooth_l1_loss(out["score"], batch["score"])
 
             loss = (self.cfg.policy_weight * policy_loss
                     + self.cfg.value_weight * value_loss
@@ -322,8 +311,8 @@ class Trainer:
         if dropped:
             print(f"warm start: fresh weights for {dropped}")
         model.load_state_dict(sd, strict=strict and not dropped)
-        # fp8 tensors cannot move to MPS/CPU backends — ship them bf16:
-        # dequantize the FP8 linears and run the whole network bf16
+        # fp8 tensors cannot move to MPS/CPU backends — ship them fp16:
+        # dequantize the FP8 linears and run the whole network fp16
         if payload["net_config"].get("fp8") \
                 and torch.device(cfg.device).type != "cuda":
             to_half_(model)

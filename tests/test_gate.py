@@ -11,7 +11,7 @@ REPO = Path(__file__).resolve().parents[1]
 def test_gate_match(tmp_path):
     out = tmp_path / "eval.json"
     r = subprocess.run(
-        [sys.executable, "scripts/gate_match.py",
+        [sys.executable, "scripts/batch_match.sh",
          "--ckpt-a", "dummy-a", "--ckpt-b", "dummy-b",
          "--games", "1", "--a-sims", "4", "--b-sims", "4",
          "--b", "7", "--komi", "9.5", "--max-plys", "40",
