@@ -93,6 +93,7 @@ To set up the environment and build the C binaries:
 
 ```sh
 make -C engine all
+make -C engine nn       # GTP + engine_mux (needs Python headers)
 make -C engine check
 
 python -m pytest tests/ -q

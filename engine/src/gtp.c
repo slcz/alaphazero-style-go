@@ -559,6 +559,13 @@ int main(int argc, char **argv) {
     if (senv && *senv)
         g_sims = atoi(senv);
     int maxply = menv && *menv ? atoi(menv) : MAX_PLY;
+    if (maxply < 1)
+        maxply = MAX_PLY;
+    if (maxply > MAX_PLY) {
+        fprintf(stderr, "gtp: GO_MAXPLY=%d exceeds MAX_PLY=%d; "
+                        "clamping\n", maxply, MAX_PLY);
+        maxply = MAX_PLY;
+    }
 
     go_init();
     rng_seed(((uint64_t)time(NULL) << 32) ^ (uint64_t)getpid()
@@ -603,6 +610,11 @@ int main(int argc, char **argv) {
 
 int gtp_wasm_init(int b, float komi, int maxply, int sims, int walkers,
                   int rows, unsigned long long seed) {
+    if (maxply < 1 || maxply > MAX_PLY) {
+        fprintf(stderr, "gtp: maxply %d outside 1..%d\n", maxply,
+                MAX_PLY);
+        return -1;
+    }
     g_sims = sims;
     g_walkers = walkers;
     go_init();

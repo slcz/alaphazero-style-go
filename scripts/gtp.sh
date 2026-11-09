@@ -4,7 +4,8 @@
 # knobs (env):
 #   PUCT_CKPT   checkpoint (default ckpts/best.pt)
 #   GO_SIMS     MCTS sims per genmove (default 2000).
-#   GO_MAXPLY   ply wall that triggers TT adjudication (default 1600)
+#   GO_MAXPLY   ply wall that triggers TT adjudication (default 1024;
+#               values above the engine's MAX_PLY are clamped)
 #   GO_BLOCK_MB node block in MB (default: auto, ~4 MB per 100 sims at
 #               9x9 scaled by board area; 2000 sims on 9x9 -> ~77 MB)
 #   GO_ANALYZE_SIMS  playouts per analyze session (default = GO_SIMS);
@@ -24,6 +25,11 @@ export GO_UTIL_LAMBDA="${GO_UTIL_LAMBDA:-1.0}"
 if [[ "${1:-}" =~ ^[0-9]+$ ]]; then
     export GO_SIMS="$1"
 fi
-export GO_MAXPLY="${GO_MAXPLY:-1600}"
+export GO_MAXPLY="${GO_MAXPLY:-1024}"
 export PUCT_WALKERS="${PUCT_WALKERS:-16}"
+if [ "${GO_DEVICE:-mps}" != "dummy" ] && [ ! -f "$PUCT_CKPT" ]; then
+    echo "gtp.sh: checkpoint not found: $PUCT_CKPT" >&2
+    echo "        set PUCT_CKPT=/path/to/ckpt.pt (or GO_DEVICE=dummy)" >&2
+    exit 2
+fi
 exec engine/build/gtp "${GO_DEVICE:-mps}" 32
