@@ -336,7 +336,7 @@ static uint32_t alloc_bytes(PuctGame *g, size_t n) {
  * GTP — counts as a draw value 0). */
 static void set_terminal(PuctNode *n, const State *st) {
     float score;
-    state_termination(st, &score, NULL);
+    state_score(st, &score, NULL);
     n->flags |= PUCT_TERMINAL;
     if (score != 0.0f)
         n->flags |= (st->side == BLACK) == (score > 0.0f)
@@ -391,13 +391,14 @@ static float blend(double lam, float wdl, double margin, int b) {
                    + (1.0 - lam) * score_term(margin, b));
 }
 
-/* Terminal backup value, mover's view: the exact TT margin, blended. */
+/* Terminal backup value, mover's view: the exact TT margin, blended, charged
+ * for the dame it leaves behind. */
 static float terminal_value(const PuctGame *g, const PuctNode *n,
                             const State *st) {
     float wdl = (n->flags & PUCT_OUTC_WIN) ? 1.0f :
                 (n->flags & PUCT_OUTC_LOSS) ? -1.0f : 0.0f;
     float score = 0.0f;
-    state_termination(st, &score, NULL);
+    state_score(st, &score, NULL);
     double margin = (st->side == BLACK) ? score : -score;
     return blend(g->util_lambda, wdl, margin, st->b);
 }

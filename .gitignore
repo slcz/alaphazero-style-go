@@ -15,3 +15,10 @@ __pycache__/
 runs/
 *.log
 ckpts/
+
+# local secrets and run scratch (never commit)
+.env
+.pushed/
+t/
+*_sgf/
+gate-sgf/

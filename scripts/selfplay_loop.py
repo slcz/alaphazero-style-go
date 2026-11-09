@@ -4,18 +4,17 @@ machine. The following command selfplays at 7x7 board for 30,000 games for
 20 iterations.
 
     python scripts/selfplay_loop.py --work-dir /data/go-run \
-        --sizes 7:30000 --iterations 20 --device cuda
+        --b 7 --komi 9.5 --iterations 20 --games 30000 --device cuda
 
 Per iteration, in <work-dir>/itNNN/:
-    spB/          the engine's GOSHARD1 shard per board size (+ DONE.json)
+    selfplay/     the engine's GOSHARD1 shard (+ DONE.json)
     train.pt      the trained checkpoint (+ train.json)
+    eval.json     the gate result against best.pt
 and one JSONL record per iteration appended to <work-dir>/loop.jsonl.
-Every trained checkpoint becomes best.pt unconditionally; compare nets
-out-of-band with scripts/gate_match.py.
 
 `--init-ckpt` is optional: omitted (and no best.pt) = random-init start.
-Delete an iteration's spB/ to regenerate; finished stages are skipped on
-resume.
+Delete an iteration's selfplay/ to regenerate; finished stages are
+skipped on resume.
 """
 from __future__ import annotations
 
@@ -63,6 +62,47 @@ def random_init_checkpoint(path: Path, seed: int) -> None:
         f"({sum(p.numel() for p in model.parameters()):,} params)")
 
 
+def _hf_token() -> str | None:
+    tok = os.environ.get("HF_TOKEN")
+    if tok:
+        return tok
+    env = REPO / ".env"
+    if env.exists():
+        for line in env.read_text().splitlines():
+            if line.startswith("HF_TOKEN="):
+                return line.split("=", 1)[1].strip()
+    return None
+
+
+def hf_enabled() -> bool:
+    """Nodes that cannot reach HF (this one resolves it but times out) set
+    HF_PUSH=0; the Mac pulls the artifacts and pushes instead."""
+    return os.environ.get("HF_PUSH", "1") != "0"
+
+
+def push_buffer(path: Path, it: int = 0) -> None:
+    """The manifest is the one thing a node loss cannot rebuild cheaply
+    (the shards come back from HF) — push it as soon as it changes."""
+    if not hf_enabled():
+        log("  buffer push skipped (HF_PUSH=0; pull from the Mac)")
+        return
+    try:
+        from huggingface_hub import HfApi
+        tok = _hf_token()
+        if not tok:
+            log("  buffer push skipped (no HF_TOKEN)")
+            return
+        HfApi(token=tok).upload_file(
+            path_or_fileobj=str(path), path_in_repo="9x9/buffer.json",
+            repo_id=os.environ.get("HF_MODEL_REPO",
+                                   "chriszhang01/go-value-net"),
+            repo_type="model",
+            commit_message=f"buffer through it{it:03d}")
+        log(f"  buffer pushed to HF 9x9/buffer.json")
+    except Exception as e:                       # never fails the loop
+        log(f"  buffer push failed ({type(e).__name__}: {e})")
+
+
 def update_buffer(work: Path, it: int, keep: float, seed: int) -> dict:
     """Rebuild buffer.json from the rounds on disk (pure function of the
     iteration, so a resume reproduces it exactly).
@@ -101,6 +141,7 @@ def update_buffer(work: Path, it: int, keep: float, seed: int) -> dict:
     log(f"it{it}: buffer {[(x['round'], len(x['games'])) for x in rec['rounds']]}"
         f" = {sum(len(x['games']) for x in rec['rounds'])} games")
     prune(work, it, {x["round"] for x in rec["rounds"]})
+    push_buffer(path, it)
     return rec
 
 
@@ -114,6 +155,32 @@ def prune(work: Path, it: int, live: set) -> None:
     for f in work.glob("it*/train.ck.pt"):
         if int(f.parent.name[2:]) < it:
             f.unlink(missing_ok=True)
+
+
+def push_iter(work: Path, it: int, rename: str | None = None) -> int:
+    """Back up the finished iteration to HF *from the node* (checkpoint,
+    summary json, gate SGFs to the model repo; the shard to the dataset
+    repo). Nothing comes back to the Mac. `push.ok` memoizes it so a
+    restart does not re-upload."""
+    if not hf_enabled():
+        log(f"it{it}: HF push skipped (HF_PUSH=0; pull from the Mac)")
+        return 0
+    mark = work / f"it{it:03d}" / "push.ok"
+    if mark.exists() and (rename is None
+                          or f"rename={rename}" in mark.read_text()):
+        log(f"it{it}: already on HF — push skipped")
+        return 0
+    cmd = [sys.executable, "scripts/hf_push_iter.py", str(it),
+           "--root", str(work)]
+    if rename:
+        cmd += ["--rename", rename]
+    log(f"it{it}: pushing to HF" + (f" (+{rename})" if rename else ""))
+    rc = pump(cmd, work / f"it{it:03d}" / "push.log")
+    log(f"it{it}: HF push {'ok' if rc == 0 else f'FAILED ({rc})'}")
+    if rc == 0:
+        with open(mark, "a") as fh:
+            fh.write(f"{time.strftime('%FT%T')} rename={rename}\n")
+    return rc
 
 
 def pump(cmd: list[str], log_path: Path, env: dict[str, str] | None = None,
@@ -179,6 +246,9 @@ def size_plans(args):
     Mixed boards keep the wave TOKEN count constant (rows ∝ 1/b²), the node
     block ∝ b² (a 15x15 node is ~3x a 9x9 one) and the pool inside a host
     RAM budget, so VRAM and memory do not move with the board size."""
+    if not args.sizes:
+        return [(args.b, args.games, args.komi, args.rows, args.block_mb,
+                 args.pool, max_plys_for(args.b))]
     out = []
     for spec in args.sizes.split(","):
         b, games = (int(x) for x in spec.split(":"))
@@ -193,15 +263,19 @@ def size_plans(args):
         # keeps the full token budget per wave.
         pool = max(64, rows // 2)
         pool = min(args.pool, pool, max(64, (12 * 1024) // block))
+        # a shipment carries ~2 rows per live game whatever the cap, so the
+        # cap has to BE 2*pool or the wave pads (7x7 at 6771: 57% fill,
+        # 3841 rows/shipment; at 4096 with the same pool: 92%)
+        rows = 2 * pool
         maxply = max_plys_for(b)
         out.append((b, games, komi, rows, block, pool, maxply))
     return out
 
 
-def unit_of(d: Path, b: int) -> Path:
-    """Unit dir itNNN/spB (the buffer and prune globs also cover the
-    legacy itNNN/selfplay dirs of the single-board era)."""
-    return d / f"sp{b}"
+def unit_of(d: Path, args, b: int) -> Path:
+    """Unit dir: itNNN/selfplay when there is one size, itNNN/spB when
+    mixed (the buffer and prune globs cover both)."""
+    return d / (f"sp{b}" if args.sizes else "selfplay")
 
 
 def generate(args, best: Path, unit_dir: Path, seed: int, b: int,
@@ -209,7 +283,7 @@ def generate(args, best: Path, unit_dir: Path, seed: int, b: int,
              max_plys: int, games: int) -> int:
     # NN_B turns on the FP8 static-wave inference path (one graph per
     # board size; see go_ai/net/nn_worker.py setup()).
-    env = dict(os.environ, NN_B=str(b))
+    env = dict(os.environ, NN_B=str(b), NN_BF16="1", NN_COMPILE="1")
     cmd = [str(SELFPLAY), str(best), str(unit_dir), str(games),
            str(b), str(komi), str(args.sims), str(pool),
            str(rows), str(args.sample_plys), str(max_plys),
@@ -230,19 +304,77 @@ def train(args, work: Path, base: Path, out: Path) -> int:
     return pump(cmd, out.parent / "train.log")
 
 
+
+def gate_specs(args):
+    """[(b, komi, games)] — the gate may span several boards, evenly split."""
+    if not args.gate_sizes:
+        return [(args.b, args.komi, args.gate_games)]
+    parts = []
+    for spec in args.gate_sizes.split(","):
+        b, k = spec.split(":")
+        parts.append((int(b), float(k)))
+    per = max(2 * len(parts), (args.gate_games // len(parts)) // 2 * 2)
+    return [(b, k, per) for b, k in parts]
+
+
+def gate(args, candidate: Path, best: Path, eval_json: Path) -> float | None:
+    # the gate is a WIN/LOSS match: both engines play the pure
+    # result-oriented search regardless of the blend selfplay trains under,
+    # so the number answers "who wins", not "who wins by more"
+    env = dict(os.environ, PUCT_SAMPLE_PLYS=str(args.gate_sample_plys),
+               GO_UTIL_LAMBDA="1.0")
+    tot_w = tot_l = 0
+    per_size = {}
+    for b, komi, games in gate_specs(args):
+        wave = games // 2
+        j = eval_json.with_name(f"{eval_json.stem}-{b}x{b}.json")
+        lp = j.with_suffix(".log")
+        cmd = [sys.executable, "scripts/gate_match.py",
+               "--ckpt-a", str(candidate), "--ckpt-b", str(best),
+               "--games", str(wave),
+               "--a-sims", str(args.gate_sims),
+               "--b-sims", str(args.gate_sims),
+               "--b", str(b), "--komi", str(komi),
+               "--max-plys", str(max_plys_for(b)),
+               "--resign", str(args.gate_resign),
+               "--device", args.device,
+               # rows per bank: walkers × games is the exact park bound —
+               # a 4096 landing zone would pad 5x per FP8 wave (gen's size)
+               "--rows", str(int(os.environ.get("PUCT_WALKERS", "4")) * wave),
+               "--json", str(j),
+               "--sgf-dir", str(eval_json.parent / "gate-sgf" / f"{b}x{b}")]
+        if pump(cmd, lp, env=env) != 0 or not j.exists():
+            return None
+        r = json.loads(j.read_text())
+        per_size[f"{b}x{b}"] = {k: r[k] for k in ("w", "l", "score_a")}
+        tot_w += r["w"]
+        tot_l += r["l"]
+    n = tot_w + tot_l
+    if n == 0:
+        return None
+    score = tot_w / n
+    eval_json.write_text(json.dumps(
+        {"score_a": score, "w": tot_w, "l": tot_l, "per_size": per_size},
+        indent=1))
+    return score
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--work-dir", required=True)
     ap.add_argument("--init-ckpt")
+    ap.add_argument("--b", type=int, default=7)
+    ap.add_argument("--komi", type=float, default=9.5)
     ap.add_argument("--iterations", type=int, default=20,
                     help="stop after this iteration (ignored with --forever)")
     ap.add_argument("--forever", action="store_true",
                     help="run until stopped; iteration numbers advance from "
                          "loop.jsonl on every restart")
-    ap.add_argument("--sizes", required=True,
-                    help="boards for generation as b:games, e.g. "
-                         "9:15000,11:8000,13:5000,15:2000 or 7:30000; "
-                         "writes itNNN/spB/")
+    ap.add_argument("--sizes", default="",
+                    help="mixed boards, e.g. 9:15000,11:5000,13:5000,"
+                         "15:5000 — overrides --games/--b and writes "
+                         "itNNN/spB/ instead of itNNN/selfplay/")
+    ap.add_argument("--games", type=int, default=30000)
     ap.add_argument("--sims", type=int, default=300)
     ap.add_argument("--fast-sims", type=int, default=50)
     ap.add_argument("--fast-p", type=float, default=0.75)
@@ -252,12 +384,27 @@ def main() -> int:
     ap.add_argument("--block-mb", type=int, default=4,
                     help="MCTS node block per game in MB; a 19x19 node is "
                          "~4x a 9x9 one, so bigger boards want more")
+    ap.add_argument("--max-plys", type=int, default=150)
     ap.add_argument("--epochs", type=int, default=1)
     ap.add_argument("--batch", type=int, default=4096)
     ap.add_argument("--lr", type=float, default=2e-4)
     ap.add_argument("--buffer-keep", type=float, default=1 / 3,
                     help="fraction of an old round kept per iteration "
                          "(1/3 → 1, 1/3, 1/9 ... of successive rounds)")
+    ap.add_argument("--gate-min", type=float, default=0.52,
+                    help="promote only if the gate beats this; a 400-game "
+                         "match has SE ~0.025, so 0.50 means 'even'")
+    ap.add_argument("--gate-games", type=int, default=400,
+                    help="total games, split evenly over --gate-sizes")
+    ap.add_argument("--gate-sizes", default="",
+                    help='e.g. "7:9.5,9:7.5"; empty = args.b/args.komi only')
+    ap.add_argument("--gate-sims", type=int, default=200)
+    ap.add_argument("--gate-max-plys", type=int, default=200)
+    ap.add_argument("--gate-resign", type=float, default=0.0,
+                    help="mover-view loss value that resigns (0 = off)")
+    ap.add_argument("--gate-sample-plys", type=int, default=10,
+                    help="gate engines sample moves for this many plies")
+    ap.add_argument("--adopt-min", type=float, default=0.5)
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--seed", type=int, default=1)
     args = ap.parse_args()
@@ -280,9 +427,9 @@ def main() -> int:
             random_init_checkpoint(best, args.seed)
     log(f"work {work} | best {best.name} sha {sha256(best)[:12]} | "
         f"{'forever' if args.forever else args.iterations} x "
-        f"({sum(p[1] for p in size_plans(args))} games @ {args.sizes} "
+        f"({args.games} games @ {args.b}x{args.b} "
         f"{args.sims}/{args.fast_sims} sims -> {args.epochs} epoch(s) -> "
-        f"promote)")
+        f"{args.gate_games}-game gate @ {args.adopt_min})")
 
     # resume point: every completed iteration is in loop.jsonl, and stage
     # caches mean a restart never redoes work that landed
@@ -299,10 +446,11 @@ def main() -> int:
         d.mkdir(parents=True, exist_ok=True)
         ckpt = d / "train.pt"
         plans = size_plans(args)
-        units = [(p, unit_of(d, p[0])) for p in plans]
-        log(f"it{it}: sizes " + " ".join(
-            f"{p[0]}x{p[0]}x{p[1]}g(rows {p[3]}, blk {p[4]}MB, "
-            f"pool {p[5]})" for p in plans))
+        units = [(p, unit_of(d, args, p[0])) for p in plans]
+        if args.sizes:
+            log(f"it{it}: sizes " + " ".join(
+                f"{p[0]}x{p[0]}x{p[1]}g(rows {p[3]}, blk {p[4]}MB, "
+                f"pool {p[5]})" for p in plans))
         t0 = time.time()
 
         games = sum(count_games(u) for _p, u in units)
@@ -335,27 +483,59 @@ def main() -> int:
             if rc != 0:
                 return rc
 
-        # unconditional upgrade: every trained checkpoint becomes the
-        # next iteration's teacher (copy-then-move so best.pt swaps
-        # atomically; net-vs-net checks live in scripts/gate_match.py)
-        shutil.copy(ckpt, work / "best.pt.next")
-        shutil.move(work / "best.pt.next", best)
-        log(f"it{it}: promoted {ckpt.name} -> best.pt "
-            f"sha {sha256(best)[:12]}")
+        # gate is EVAL-ONLY: the latest checkpoint always becomes the
+        # next iteration's base (no accept/reject decision).
+        eval_json = d / "eval.json"
+        if eval_json.exists():
+            score = float(json.loads(eval_json.read_text())["score_a"])
+            log(f"it{it}: reusing cached gate {score:.3f}")
+        else:
+            log(f"it{it}: gating {ckpt.name} against best.pt (eval only)")
+            score = gate(args, ckpt, best, eval_json)
+        # a match inside the noise band is not evidence of improvement:
+        # keep the previous base so a coin flip cannot become the teacher
+        if eval_json.exists():
+            ev = json.loads(eval_json.read_text())
+            if ev.get("per_size"):
+                log("it{it}: gate by size ".format(it=it) + "  ".join(
+                    f"{k} {v['score_a']:.3f} ({v['w']}-{v['l']})"
+                    for k, v in ev["per_size"].items()))
+        promote = score is not None and score >= args.gate_min
+        if promote:
+            shutil.copy(ckpt, work / "best.pt.next")
+            shutil.move(work / "best.pt.next", best)
+        log(f"it{it}: gate {'FAILED' if score is None else f'{score:.3f}'} "
+            f"(bar {args.gate_min:.2f}) -> "
+            f"{'promoted' if promote else 'NOT promoted, base kept'}")
 
         rec = {"iteration": it, "games": games, "epochs": args.epochs,
+               "gate_score": score,
                "elapsed_s": round(time.time() - t0),
                "ckpt": str(ckpt.relative_to(work)),
                "ckpt_sha256": sha256(ckpt) if ckpt.exists() else None,
                "best_sha256": sha256(best)[:16],
                "params": {**{k: getattr(args, k) for k in
-                             ("sizes", "sims", "fast_sims", "fast_p",
-                              "buffer_keep", "lr", "batch", "epochs")},
+                             ("b", "komi", "sims", "fast_sims", "fast_p",
+                              "buffer_keep", "lr", "batch", "epochs",
+                              "gate_games")},
                           # the search blend is environment, not an argv
                           "util_lambda":
                               float(os.environ.get("GO_UTIL_LAMBDA", 0.5)),
+                          "root_noise":
+                              float(os.environ.get("GO_ROOT_NOISE_EPS", 0.0)),
+                          "root_noise_total":
+                              float(os.environ.get("GO_ROOT_NOISE_TOTAL",
+                                                   10.83)),
                           "switch_v":
-                              float(os.environ.get("GO_SWITCH_V", 0.95))}}
+                              float(os.environ.get("GO_SWITCH_V", 0.95)),
+                          "score_fast_sims":
+                              int(os.environ.get("GO_SCORE_FAST_SIMS", 0)),
+                          # fixed: the gate always plays pure win/loss
+                          "gate_lambda": 1.0}}
+        # durability first: the checkpoint/summary/SGFs/shard leave the
+        # node (gen0 aliases it001's net), THEN the iteration is recorded —
+        # a crash in between re-runs the push-free path on restart
+        push_iter(work, it, rename="gen0" if it == 1 else None)
         with open(work / "loop.jsonl", "a") as fh:
             fh.write(json.dumps(rec) + "\n")
         it += 1

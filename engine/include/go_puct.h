@@ -108,12 +108,14 @@ double puct_utility_lambda(void);
  * driver flips a decided game to pure score. Changing it invalidates every
  * stored Q (they are in the old units), so pair it with puct_clear_tree. */
 void   puct_set_game_lambda(PuctGame *g, double l);
+
 double puct_game_lambda(const PuctGame *g);
 
 /* Per-game ceiling on the search budget for each think (0 = off). Used to
  * play the decided part of a game cheaply; those plies record their real
  * budget, so the row filter drops them from training. */
 void   puct_set_sims_cap(PuctGame *g, int n);
+
 int    puct_sims_cap(const PuctGame *g);
 
 /* Drop the search tree at the current position (state, walkers and the

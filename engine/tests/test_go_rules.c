@@ -387,7 +387,29 @@ static void fuzz(int b, int games, int maxply, float komi) {
     }
 }
 
+/* state_termination with ownership only (score NULL) must not crash */
+static void test_termination_null_score(void) {
+    State st;
+    go_state_init(&st, 7, 9.5f, 400);
+    for (int i = 0; i < 2; i++) {
+        MoveList ml;
+        gen_legal(&st, &ml);
+        make_move(&st, MOVE_PASS);
+    }
+    float own[GO_MAX_POINTS];
+    CHECK(state_termination(&st, NULL, own) == TERM_OVER);
+    float score = 0.0f;
+    CHECK(state_termination(&st, &score, NULL) == TERM_OVER);
+    float own2[GO_MAX_POINTS];
+    float score2 = 0.0f;
+    CHECK(state_termination(&st, &score2, own2) == TERM_OVER);
+    CHECK(score == score2);
+    for (int p = 0; p < 49; p++)
+        CHECK(own[p] == own2[p]);
+}
+
 int main(void) {
+    test_termination_null_score();
     go_init();
     test_zobrist_stable();
     test_empty_board();

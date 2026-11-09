@@ -177,9 +177,10 @@ void make_move(State *s, Move m) {
 
 uint64_t state_poskey(const State *s) { return s->keys[s->ply]; }
 
-int state_termination(const State *s, float *score, float *ownership) {
-    if (!game_over(s))
-        return TERM_PLAYING;
+/* TT score and ownership of the position AS IT STANDS, mid-game included.
+ * Same code path as the final score, so a decision taken from it is
+ * consistent with the result the game will be given. */
+void state_score(const State *s, float *score, float *ownership) {
     if (score || ownership) {
         float tmp[GO_MAX_POINTS];
         float *own = ownership ? ownership : tmp;
@@ -224,8 +225,15 @@ int state_termination(const State *s, float *score, float *ownership) {
                     own[region[i]] = (rb != rw) ? (rb ? 1.0f : 0.0f) : 0.5f;
             }
         }
-        *score = (float)(bs - ws) - s->komi;
+        if (score)
+            *score = (float)(bs - ws) - s->komi;
     }
+}
+
+int state_termination(const State *s, float *score, float *ownership) {
+    if (!game_over(s))
+        return TERM_PLAYING;
+    state_score(s, score, ownership);
     return TERM_OVER;
 }
 
