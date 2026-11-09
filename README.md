@@ -1,4 +1,4 @@
-# gonet — a self-play Go AI
+# A self-play Go AI
 
 An AlphaZero-style go engine that improves by playing against itself.
 The engine is built around a small 8-layer transformer neural network
