@@ -22,19 +22,19 @@
 # set from Sabaki's "Arguments" field:  gtp_mac.sh 1000
 set -e
 cd "${0%/*}/.."        # no dirname: Sabaki may spawn us with an empty PATH
-export PUCT_CKPT="${PUCT_CKPT:-$PWD/ckpts/it017.pt}"
-export GO_SIMS="${GO_SIMS:-1000}"
+export PUCT_CKPT="${PUCT_CKPT:-$PWD/ckpts/it026.pt}"
+export GO_SIMS="${GO_SIMS:-4000}"
 # MCTS utility = lambda * win/loss + (1 - lambda) * tanh(margin / 2b), the
 # same blend selfplay uses. 1.0 is pure win/loss (plays anything that wins,
 # never counts); 0.8 keeps 20 % counting and is what training runs at.
 #   GO_UTIL_LAMBDA=0.8 ./scripts/gtp_mac.sh    # the training blend
-export GO_UTIL_LAMBDA="${GO_UTIL_LAMBDA:-0.9}"
+export GO_UTIL_LAMBDA="${GO_UTIL_LAMBDA:-1.0}"
 # Sabaki "Arguments": a single number overrides GO_SIMS.
 if [[ "${1:-}" =~ ^[0-9]+$ ]]; then
     export GO_SIMS="$1"
 fi
 export GO_MAXPLY="${GO_MAXPLY:-400}"
-export PUCT_WALKERS="${PUCT_WALKERS:-4}"
+export PUCT_WALKERS="${PUCT_WALKERS:-32}"
 # torch comes from the chess project's venv (Python 3.9 + MPS): the
 # engine was built against that same CLT Python and carries the venv's
 # site-packages on its embedded sys.path.

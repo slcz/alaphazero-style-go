@@ -74,7 +74,12 @@ static size_t block_bytes_for(int sims, int b) {
 }
 
 static size_t g_block;                /* bytes of the current node block */
-static int g_walkers = 8;
+/* One game in flight, so the walkers ARE the batch: a wave carries one row
+ * per walker and the compiled width (rows) pads it. With walkers 8 against
+ * rows 1024 a wave was 0.8% full. 32 walkers against 64 rows fills half of
+ * a still-cheap forward; raising walkers to `rows` gives one full wave but
+ * costs search quality (all descents fly blind under virtual loss). */
+static int g_walkers = 32;
 
 /* Fresh game at (b, komi, maxply) sized for the playout budget. mmap is
  * lazy, so an oversized block costs address space, not memory. */
@@ -378,7 +383,7 @@ int main(int argc, char **argv) {
     const char *device = argc > 1 ? argv[1] : "mps";
     int rows = argc > 2 ? atoi(argv[2]) : 0;
     if (rows <= 0)
-        rows = 1024;
+        rows = 64;                  /* ~2x walkers: one wave, little padding */
     const char *ckpt = getenv("PUCT_CKPT");
     const char *senv = getenv("GO_SIMS");
     const char *menv = getenv("GO_MAXPLY");
