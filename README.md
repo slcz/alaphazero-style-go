@@ -65,7 +65,7 @@ ownership and scoring lables for the loss heads, the MCTS utility function
 has both the win/loss and score terms,
 
 $$
-$utility = \lambda \cdot WL + (1 - \lambda) \cdot score$
+utility = \lambda \cdot WL + (1 - \lambda) \cdot score
 $$
 
 During selfplay, $\lambda$ is set to 0.8. For matching, $\lambda$ is set to 1.0 to
