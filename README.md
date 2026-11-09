@@ -15,7 +15,7 @@ Carlo tree search guided by the value and policy heads and trains the
 network on improved policy/value.
 
 The engine is designed to be resource-efficient. Starting from a randomly
-initialized network, it reaches itermediate to advanced player
+initialized network, it reaches intermediate to advanced player
 (1k-1d rank) on a single consumer-grade GPU (RTX5090) in 60 hours
 (or ~$40 cloud compute cost).
 
