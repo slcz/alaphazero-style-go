@@ -1,8 +1,8 @@
 """
 go_ai/net/nn_worker.py — the Python half of the NN evaluator
-(engine/src/nn_eval.c). Ported from the chess worker; shapes are Go's:
-rows are strided at the MAX board (361×18 tokens, 362 policy slots) and
-sliced to the run's b before the forward.
+(engine/src/nn_eval.c).  rows are strided at the MAX board
+(361×18 tokens, 362 policy slots) and sliced to the run's b
+before the forward.
 
 Owns the model and the device tensors; host staging tensors are allocated
 here (pinned where possible) and handed to C by raw pointer: walkers fill

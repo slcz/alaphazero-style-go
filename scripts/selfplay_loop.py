@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """selfplay_loop.py — one self-contained train/upgrade loop on a single
-machine (ported from the chess loop; Go knobs, 8× D4 augmentation in
-training, no opening book — games start empty).
+machine. The following command selfplays at 7x7 board for 30,000 games for
+20 iterations.
 
     python scripts/selfplay_loop.py --work-dir /data/go-run \
         --sizes 7:30000 --iterations 20 --device cuda

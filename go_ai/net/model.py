@@ -1,22 +1,18 @@
 """
-go_ai/net/model.py — the Go transformer (trunk ported from the chess
-engine's ChessTransformer; heads and RoPE are Go-specific).
+go_ai/net/model.py — the Go transformer
 
     tokens [B, b*b, 18]                  (go_nn.h layout, C-encoded)
       │ input projection  Linear(18 → d)   (no absolute position embedding)
       ▼
     8 × encoder blocks
         ├─ LN → multi-head attention (8 heads): axial 2D RoPE on q/k
-        │      (parameter-free; scores depend on (Δx, Δy) only)
-        └─ LN → up-GEMM (d → 4d) → 3x3 depthwise → GELU
-           → down-GEMM (4d → d) → residual  (channels-last dw: the
-             layout permutes are zero-copy views; fp8 GEMMs at inference)
+        └─ LN → up-GEMM (d → 4d) → 3x3 depthwise conv → GELU
+           → down-GEMM (4d → d) → residual
       │ final LN
       ├─ policy head: Linear(d→1) per point + a pass logit from the
-      │    mean-pool → b*b+1 logits (pass = slot b*b)
-      ├─ value head: mean-pool → MLP → 2 logits [pW, pL]; the scalar the
-      │    search consumes is v = pW (= 1 at pure win)
-      ├─ ownership head: Linear(d→1) per point (no pass) — mover-view
+      │    mean-pool → b*b+1 logits
+      ├─ value head: mean-pool → MLP → 2 logits [pW, pL]
+      ├─ ownership head: Linear(d→1) per point — mover-view
       │    own-probability via sigmoid in the loss
       ├─ score head: mean-pool → MLP → 1 number, the predicted margin in
       │    points (size-agnostic: the same head serves 7x7..19x19)
@@ -170,9 +166,8 @@ def to_fp8_(root: nn.Module) -> None:
 
 def to_half_(root: nn.Module) -> None:
     """Replace FP8Linears with plain fp16 Linears (dequantized once).
-    Non-CUDA targets (MPS) cannot hold the fp8 dtype at all, and MPS
-    bf16 matmul asserts on the fused bias — fp16 is the stable fast
-    path (same 2x rate). Conversion happens on CPU at load time."""
+    Non-CUDA targets cannot hold the fp8 dtype at all, for these targets,
+    fp16 is the stable fast path. Conversion happens on CPU at load time."""
 
     def conv(m: FP8Linear) -> nn.Linear:
         lin = nn.Linear(m.wq.shape[1], m.wq.shape[0], bias=m.bias is not None)
@@ -228,13 +223,6 @@ class RopeAttention(nn.Module):
 
 
 class ConvFFN(nn.Module):
-    """MBConv-style FFN: up/down MLP linears, 3x3 depthwise conv between
-    them (the Go-locality prior; ~2% of FLOPs). The dw conv runs
-    channels_last so the [B,N,C] <-> [B,C,H,W] transitions are zero-copy
-    views — and under torch.compile the surrounding norm/cast/GELU fuse
-    into neighbor kernels. Zero-init down: the branch starts as the
-    identity."""
-
     def __init__(self, d_model: int, d_ff: int):
         super().__init__()
         self.up = nn.Linear(d_model, d_ff)
@@ -256,8 +244,7 @@ class ConvFFN(nn.Module):
 
 
 class EncoderBlock(nn.Module):
-    """Pre-LN transformer encoder block (chess trunk; the FFN is the Go
-    conv variant above)."""
+    """Pre-LN transformer encoder block"""
 
     def __init__(self, cfg: NetConfig):
         super().__init__()

@@ -1,6 +1,6 @@
 """
 go_ai/engine.py — Python binding over the C TT rules engine (cffi, ABI
-mode; ported from chess_ai/engine.py).
+mode).
 
 Everything rules-shaped (legality, superko, scoring, feature encoding)
 lives in C behind engine/include/go_ffi.h; this module drives it. The C

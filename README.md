@@ -5,24 +5,23 @@ The engine is built around a small 8-layer transformer neural network
 (~6.7M parameters). The engine is trying to be simple to understand
 and fast to train and yet deliver reasonable performance. You can try
 a trained network checkpoint in the [web](https://slcz.github.io/go/web/) —
-it loads the latest 9x9 checkpoint (it023) from HuggingFace by default.
+it loads the latest checkpoint by default.
 
 Like Alpha zero, the network has a value head that outputs a board
 value and policy head that outputs the probability distribution over
-moves. Also as in AlphaZero, the engine improves by playing games
-against itself and using Monte Carlo tree search guided by the value
-and policy heads.
+moves. The engine improves by playing games against itself, using Monte
+Carlo tree search guided by the value and policy heads and trains the
+network on improved policy/value.
 
 The engine is designed to be resource-efficient. Starting from a randomly
-initialized network, it reaches roughly 1900–2000 Elo on a single
-consumer-grade GPU (RTX5090) in about 60 hours (or ~$50 cloud compute cost).
+initialized network, it reaches itermediate to advanced player
+(1k-1d rank) on a single consumer-grade GPU (RTX5090) in 60 hours
+(or ~$40 cloud compute cost).
 
 ![Selfplay compute vs ladder Elo](charts/elo-vs-flops.png)
 
-*Scaling of the run: accumulated self-play compute per iteration (parsed
-from the self-play shards — games × plies/game × sims/ply × FLOPs/forward)
-against a chained Elo ladder (50 standard 19×19 games per checkpoint pair,
-200 sims/move, it001 anchored at 1000). Per-match records live in
+*Scaling of the run: accumulated self-play compute per iteration
+against a chained Elo ladder. Per-match records live in
 [`checkpoints/matches/`](https://huggingface.co/chriszhang01/gonet/tree/main/checkpoints/matches)
 on the model repo.*
 
@@ -34,13 +33,14 @@ it generates more games by running a full search on only a small number
 of plies, searching most others with a smaller budget, and training the
 network only on the fully searched plies. The network is trained on the
 25% of plies that receive 200 simulations each; the remaining fast plies
-use 40 simulations. Average per ply budget is 70 simulations, a puny
+use 40 simulations. Average per ply budget is 80 simulations, a puny
 number compared with Alphago's 1600 simulations per step.
 
 Instead of AlphaZero's PUCT selection rule, the engine's MCTS search uses
 **regularized policy optimization** (Grill et al., 2020): PUCT's
 hand-crafted formula approximates the solution to a regularized
-policy-optimization objective. Here, $\bar{\pi}$ is computed exactly as
+policy-optimization objective. Here, $\bar{\pi}$ is computed as the solution
+to,
 
 $$
 \bar{\pi} = \arg\max_y \left[ q^T y - \lambda_N \,\mathrm{KL}(\pi_\theta, y) \right].
@@ -51,51 +51,49 @@ sampled during MCTS descent, and the played move. This has a useful
 property: there is no Dirichlet noise, no temperature, no visit-count
 target, and no hand-crafted exploration tricks. Because $\bar{\pi}$ is computed
 directly from Q-values, it also works well with playout cap randomization
-and the fast plies that use a smaller search budget. AlphaZero instead
-uses visit counts to estimate Q-values, which intertwines search and learning and
-does not perform very well on small MCTS simulation budget.
+and the fast plies that use a small search budget. AlphaZero instead
+uses visit counts to estimate Q-values, which requires large number of simulations
+to approximate $\bar{\pi}$.
 
-Also borrowed from Katago idea, the network has a few extra auxiliary training
+
+Also borrowed from KataGo idea, the network has a few extra auxiliary training
 head. Notably the ownership territory map and score difference.
 Terminal state is scored and labeled using Tromp-tylor rules. This implies
-that the engine has to clean up (capture) the dead stones before passes.
+that the selfplay has to up capture the dead stones before passes.
 To train the engine to pass clean and to provide an accurate end of game
 ownership and scoring lables for the loss heads, the MCTS utility function
-has both the win/loss and score components,
+has both the win/loss and score terms,
 
 $$
-$utility = \lambda \cdot winloss + (1 - \lambda) \cdot scorediff$
+$utility = \lambda \cdot WL + (1 - \lambda) \cdot score$
 $$
 
 During selfplay, $\lambda$ is set to 0.8. For matching, $\lambda$ is set to 1.0 to
 maximize the win rate.
 
 The network architecture is a 8 layer, 8 heads, 256 dimensions encoder-only transformer.
-2D Rope is used to account for 2D board geometry. In addition, 3x3 convolution layer is
-inserted after the upscaling MLP to help with spatial locality. Muon optimizer is used
-across the network with learning rate set to 0.01 throughout. The network purposely
-supports different board size for mixed board size training and evaluation.
+2D Rope is used to account for 2D board geometry. Transformer helps understand
+global structures, such as ladder. In addition, a 3x3 convolution layer is
+appended after the upscaling MLP to help understand local structure. Input features are
+selected to reflect the geometry structure of the board, without any domain knowledge of
+the game play. Muon optimizer is used across the network with learning rate set to 0.01
+throughout. The network purposely supports different board size for mixed board size training
+and evaluation.
 
 Initial iterations are played on 9x9 board exclusively. Once a basic value/score head
 is trained, larger board sizes are gradually introduced. Knowledge trained on smaller
-boards transferred well into larger boards, saving computing resource. The final
-checkpoint is obtained with merely 15,000 19x19 sized games.
+boards transferred well into larger boards, saving computing resource. Without any
+previous training on 19x19 board, the engine is able to compete at 6k level. At merely
+15,000 19x19 sized game play and training, the network is able to compete at 1d level
+(at 2000-4000 search budget).
 
 ## Build and test
 
 To set up the environment and build the C binaries:
 
 ```sh
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-
 make -C engine all
 make -C engine check
-
-# native NN drivers: self-play, the gate server, and the Stockfish gauntlet
-make -C engine build/selfplay build/uci_mux build/sf_gauntlet
 
 python -m pytest tests/ -q
 ```
@@ -103,68 +101,23 @@ python -m pytest tests/ -q
 To run the self-play → training → evaluation loop:
 
 ```sh
-mkdir -p data
-curl -fL -o /tmp/noob_3moves.epd.zip \
-  https://github.com/official-stockfish/books/raw/master/noob_3moves.epd.zip
-unzip -p /tmp/noob_3moves.epd.zip > data/book.epd
-rm /tmp/noob_3moves.epd.zip
-
-python scripts/selfplay_loop.py \
-  --work-dir /data/az-run \
-  --book data/book.epd \
-  --iterations 20 --games 30000 --device cuda
+python scripts/selfplay_loop.py --work-dir /data/go-run \
+    --sizes 7:30000 --iterations 20 --device cuda --init-ckpt best.pt
 ```
 
+The selfplay/training loop runs for 20 iterations. Each itertaion, 30,000
+slefplay games are generated at 7x7 board.
 `--init-ckpt` is optional: if it is omitted and `best.pt` does not exist,
 the loop creates a random-init checkpoint in the work directory. On
-macOS, use `--device mps`. The opening book is used only for evaluation;
-self-play generates games by sampling from π̄.
+macOS, use `--device mps`.
 
-## Training history (rpo-learn)
-
-![rpo-learn lineage: training loss and relative Elo vs self-play effort](docs/rpo_learn_training.png)
-
-Last logged training loss per generation (total, policy, value, and aux
-weighted ×0.3) and cumulative gate ΔElo against the previous approved net
-(gen1 = 0; band ±√Σσ²), plotted against estimated self-play effort.
-Dashed lines mark gen14 (slow-only training), gen18 (π̄ SEARCH), and gen20
-(PCR 300/24). Raw per-generation values are in
-[the CSV](docs/rpo_learn_training.csv); the source records are
-[`rpo-learn/ITERATIONS.md`](https://huggingface.co/chriszhang01/chessnet/blob/main/rpo-learn/ITERATIONS.md).
-
-- **Effort:** new self-play games × mean plies × PCR sims/ply
-  (112.5 for 300/50 @ 0.75; gen20 uses 70 for 300/24 @ 0.8333).
-- **Excluded:** buffer replay, evaluation games, and companion arms.
-  Gen18 counts arm C only (49,150 games); gen20 counts arm A only
-  (43,000 games).
-- **Mean plies:** derived from recorded rows/positions; gen11/12/15/18
-  use a 120-ply fallback.
-- **Elo:** cumulative sum of per-generation gate deltas, not an absolute
-  rating.
-
-## Web GUI
-
-You can try the trained network in the [web GUI](https://slcz.github.io/chess/).
-The net panel defaults to `rpo-learn/gen20.onnx`, the final checkpoint
-of the 20-iteration `rpo-learn` lineage.
-
+To run 100 matches (50 black, 50 white for each checkpoint), in batch
+mode between 2 checkpoints,
 ```sh
-# ORT-web runtime, ~42 MB, fetched once into web/vendor/
-sh web/get_vendor.sh
-
-# Emscripten (once, macOS example)
-git clone https://github.com/emscripten-core/emsdk.git ~/dev/emsdk
-cd ~/dev/emsdk && ./emsdk install latest && ./emsdk activate latest
-cd -
-
-# Build wasm. On macOS the wrapper handles emsdk + Python 3.12:
-web/build.sh
-# On Linux, source the emsdk env and call make directly:
-# source ~/dev/emsdk/emsdk_env.sh && make -C engine wasm
+python scripts/batch_match.py --ckpt-a a.pt --ckpt-b b.pt --games 50 \
+    --b 19 --device cuda
 ```
 
-To serve the web page:
-
-```sh
-python3 web/serve.py
-```
+The engine support GTP protocol. It can connect to any GTP compatible interface
+(e.g. Sabaki) to match agains human player or another bot. Check scripts/gtp.sh
+for configuration details.
