@@ -75,7 +75,7 @@ static void respond(const char *id, const char *fmt, const char *payload) {
  * edge array of (b*b+1) 8-byte edges, so the requirement scales with b^2
  * and with the playout budget. */
 #define PUCT_BYTES_PER_SIM_POINT 500.0
-#define PUCT_BLOCK_FLOOR (64u << 20)
+#define PUCT_BLOCK_FLOOR (16u << 20)
 
 static size_t block_bytes_for(int sims, int b) {
     if (g_block_mb > 0)

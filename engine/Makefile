@@ -101,7 +101,7 @@ EMS        ?= emcc
 WASM_SRCS   = src/gtp.c src/wasm_glue.c $(CORE)
 WASM_FLAGS  = -O2 -std=c11 -Iinclude \
   -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=createGoEngine -sENVIRONMENT=web,worker,node \
-  -sASYNCIFY=1 -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=192MB \
+  -sASYNCIFY=1 -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=96MB \
   -sMAXIMUM_MEMORY=2GB -sSTACK_SIZE=1MB \
   -sEXPORTED_FUNCTIONS=_malloc,_free,_gtp_wasm_init,_gtp_exec,_gtp_interrupt,_gtp_wasm_attach_net,_gtp_wasm_set_sims \
   -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,UTF8ToString,stringToUTF8,HEAPU8,HEAPF32
