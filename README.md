@@ -82,17 +82,11 @@ throughout. The network purposely supports different board size for mixed board 
 and evaluation.
 
 ```text
-                    tokens [B, b*b, 18]     b = sqrt(T)
-                              |
-                              v
-                     Linear 18 -> 256
-                              |
-                              v
         +-------------------------------------------+
         | 8 x EncoderBlock                          |
         |                                           |
-        |   x = x + MHSA(LN(x))                     |
-        |         qkv 256 -> 768                    |
+        |   x = x + Multi-head attention(LN(x))     |
+        |         qkv 256 -> 768  (Q|K|V)           |
         |         8 heads, d_head = 32              |
         |         axial 2D RoPE on q,k              |
         |         SDPA -> proj 256 -> 256           |
@@ -103,13 +97,6 @@ and evaluation.
         |         3x3 depthwise conv (1024 groups)  |
         |         GELU -> down 1024 -> 256          |
         +-------------------------------------------+
-                              |
-                         LayerNorm
-                              |
-        +-----------+---------+----------+-----------+
-        |           |         |          |           |
-        v           v         v          v           v
-     Policy      Value   Ownership    Score      Aux policy*
 ```
 
 ```text
@@ -123,6 +110,11 @@ Aux*       second policy head, training only (not in the web ONNX export)
 
 `T = b*b`; the same weights run on 7x7 through 19x19. The policy mask is
 applied only at the heads, so illegal moves get exactly zero probability.
+
+`qkv 256 -> 768` is one `Linear(256, 3*256)`: it emits Q, K and V
+concatenated, then `chunk(3)` splits them into three `[B, T, 256]`
+tensors, each reshaped to 8 heads x 32 dims. 768 = 3 x 256; it is not a
+wider per-head model.
 
 Initial iterations are played on 9x9 board. Once a basic value/score head
 is trained, larger board sizes are gradually introduced. Knowledge trained on smaller
