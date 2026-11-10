@@ -15,8 +15,9 @@ network on improved policy/value.
 
 The engine is designed to be resource-efficient. Starting from a randomly
 initialized network, it reaches intermediate to advanced player
-(1k-1d rank) on a single consumer-grade GPU (RTX5090) in 60 hours
-(or ~$40 cloud compute cost).
+(1k-1d rank) on a single consumer-grade GPU (RTX5090, 32GB VRAM) and a low end
+AMD server with 32GB memory in 60 hours of continuous self-play, training
+and evaluation loop (or ~$40 cloud compute cost).
 
 ![Selfplay compute vs ladder Elo](charts/elo-vs-flops.png)
 
@@ -49,11 +50,11 @@ $$
 The same $\bar{\pi}$ is the policy-head training target, the distribution
 sampled during MCTS descent, and the played move. This has a useful
 property: there is no Dirichlet noise, no temperature, no visit-count
-target, and no hand-crafted exploration tricks. Because $\bar{\pi}$ is computed
-directly from Q-values, it also works well with playout cap randomization
-and the fast plies that use a small search budget. AlphaZero instead
-uses visit counts to estimate Q-values, which requires large number of simulations
-to approximate $\bar{\pi}$.
+target, no hand-crafted exploration tricks and much less hyper-parameters to tune.
+Because $\bar{\pi}$ is computeddirectly from Q-values, it also works well with
+play-out cap randomization and the fast plies that use a small search budget. 
+AlphaZero instead uses visit counts to estimate Q-values, which requires large
+number of simulations to approximate $\bar{\pi}$.
 
 
 Also borrowed from KataGo idea, the network has a few extra auxiliary training
@@ -80,7 +81,7 @@ the game play. Muon optimizer is used across the network with learning rate set 
 throughout. The network purposely supports different board size for mixed board size training
 and evaluation.
 
-Initial iterations are played on 9x9 board exclusively. Once a basic value/score head
+Initial iterations are played on 9x9 board. Once a basic value/score head
 is trained, larger board sizes are gradually introduced. Knowledge trained on smaller
 boards transferred well into larger boards, saving computing resource. Without any
 previous training on 19x19 board, the engine is able to compete at 6k level. At merely
