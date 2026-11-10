@@ -81,6 +81,20 @@ the game play. Muon optimizer is used across the network with learning rate set 
 throughout. The network purposely supports different board size for mixed board size training
 and evaluation.
 
+┌───────────────┐                                                      ┌───────────────────┐
+│ input feature |                                                   ┌─▶│Policy [b², 1]+Pass│
+│ [b², 18]      │                                                   |  ├───────────────────┤
+│ - own  stones │  ┌───────┐                                        ├─▶|Value [pWin, pLoss]│
+│ - oppo stones │  │       │                                        |  ├───────────────────┤
+│ - last 5 plys ├─▶│18─▶256├──┬────────────────────────────────────┬┼─▶|Ownership[b², 1]   │
+│ - dist to edge│  │       │  │                                    │|  ├───────────────────┤
+│ - pass hist(5)│  └───────┘  └─▶┌──────────┐                      │├─▶|Score difference[1]|         
+│ - komi/15     │                │ MHA (8H) ├───────...──────────┬─┘|  ├───────────────────┤
+│ - board sz/19 │                └────┬─────┘                    |  └─▶|Aux policy [b², 1] │
+└───────────────┘                     │  ┌─────┐ ┌─────┐ ┌─────┐ │     └───────────────────┘
+                                      └─▶│ffn_u├▶│conv ├▶│ffn_d├─┘
+                                         └─────┘ └─────┘ └─────┘
+
 Initial iterations are played on 9x9 board. Once a basic value/score head
 is trained, larger board sizes are gradually introduced. Knowledge trained on smaller
 boards transferred well into larger boards, saving computing resource. Without any
