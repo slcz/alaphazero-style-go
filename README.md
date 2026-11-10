@@ -81,6 +81,49 @@ the game play. Muon optimizer is used across the network with learning rate set 
 throughout. The network purposely supports different board size for mixed board size training
 and evaluation.
 
+```text
+                    tokens [B, b*b, 18]     b = sqrt(T)
+                              |
+                              v
+                     Linear 18 -> 256
+                              |
+                              v
+        +-------------------------------------------+
+        | 8 x EncoderBlock                          |
+        |                                           |
+        |   x = x + MHSA(LN(x))                     |
+        |         qkv 256 -> 768                    |
+        |         8 heads, d_head = 32              |
+        |         axial 2D RoPE on q,k              |
+        |         SDPA -> proj 256 -> 256           |
+        |                                           |
+        |   x = x + ConvFFN(LN(x))                  |
+        |         up 256 -> 1024                    |
+        |         reshape b x b                     |
+        |         3x3 depthwise conv (1024 groups)  |
+        |         GELU -> down 1024 -> 256          |
+        +-------------------------------------------+
+                              |
+                         LayerNorm
+                              |
+        +-----------+---------+----------+-----------+
+        |           |         |          |           |
+        v           v         v          v           v
+     Policy      Value   Ownership    Score      Aux policy*
+```
+
+```text
+Policy     per-point 256->1 + pass logit (mean pool 256->1)
+           -> b*b+1 logits -> masked log-softmax
+Value      mean pool -> 256->256 -> GELU -> 256->2 -> softmax [pW, pL]
+Ownership  per-point 256->1 -> sigmoid (mover view)
+Score      mean pool -> 256->256 -> GELU -> 256->1 -> margin (points)
+Aux*       second policy head, training only (not in the web ONNX export)
+```
+
+`T = b*b`; the same weights run on 7x7 through 19x19. The policy mask is
+applied only at the heads, so illegal moves get exactly zero probability.
+
 Initial iterations are played on 9x9 board. Once a basic value/score head
 is trained, larger board sizes are gradually introduced. Knowledge trained on smaller
 boards transferred well into larger boards, saving computing resource. Without any
