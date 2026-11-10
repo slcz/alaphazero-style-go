@@ -81,46 +81,6 @@ the game play. Muon optimizer is used across the network with learning rate set 
 throughout. The network purposely supports different board size for mixed board size training
 and evaluation.
 
-```text
-        +-------------------------------------------+
-        | 8 x EncoderBlock                          |
-        |                                           |
-        |   x = x + Multi-head attention(LN(x))     |
-        |         qkv 256 -> 768  (Q|K|V)           |
-        |         8 heads, d_head = 32              |
-        |         axial 2D RoPE on q,k              |
-        |         SDPA -> proj 256 -> 256           |
-        |                                           |
-        |   x = x + ConvFFN(LN(x))                  |
-        |         up 256 -> 1024                    |
-        |         reshape b x b                     |
-        |         3x3 depthwise conv (1024 groups)  |
-        |         GELU -> down 1024 -> 256          |
-        +-------------------------------------------+
-```
-
-```text
-Policy     per-point 256->1 + pass logit (mean pool 256->1)
-           -> b*b+1 logits -> masked log-softmax
-Value      mean pool -> 256->256 -> GELU -> 256->2 -> softmax [pW, pL]
-Ownership  per-point 256->1 -> sigmoid (mover view)
-Score      mean pool -> 256->256 -> GELU -> 256->1 -> margin (points)
-Aux*       second policy head, training only (not in the web ONNX export)
-```
-
-`T = b*b`; the same weights run on 7x7 through 19x19. The policy mask is
-applied only at the heads, so illegal moves get exactly zero probability.
-
-`qkv 256 -> 768` is one `Linear(256, 3*256)`: it emits Q, K and V
-concatenated, then `chunk(3)` splits them into three `[B, T, 256]`
-tensors, each reshaped to 8 heads x 32 dims. 768 = 3 x 256; it is not a
-wider per-head model.
-
-`SDPA` is scaled dot-product attention: per head,
-`softmax(Q K^T / sqrt(32)) V` (PyTorch's
-`F.scaled_dot_product_attention`), with no causal mask. The 32 is
-`d_head`; the resulting heads are concatenated and projected back to 256.
-
 Initial iterations are played on 9x9 board. Once a basic value/score head
 is trained, larger board sizes are gradually introduced. Knowledge trained on smaller
 boards transferred well into larger boards, saving computing resource. Without any
