@@ -116,6 +116,11 @@ concatenated, then `chunk(3)` splits them into three `[B, T, 256]`
 tensors, each reshaped to 8 heads x 32 dims. 768 = 3 x 256; it is not a
 wider per-head model.
 
+`SDPA` is scaled dot-product attention: per head,
+`softmax(Q K^T / sqrt(32)) V` (PyTorch's
+`F.scaled_dot_product_attention`), with no causal mask. The 32 is
+`d_head`; the resulting heads are concatenated and projected back to 256.
+
 Initial iterations are played on 9x9 board. Once a basic value/score head
 is trained, larger board sizes are gradually introduced. Knowledge trained on smaller
 boards transferred well into larger boards, saving computing resource. Without any
