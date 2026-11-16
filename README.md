@@ -5,7 +5,11 @@ The engine is built around a small 8-layer transformer neural network
 (~6.7M parameters). The engine is trying to be simple to understand
 and fast to train and yet deliver reasonable performance. You can try
 a trained network checkpoint in the
-[web](https://slcz.github.io/alaphazero-style-go/web/).
+[web](https://slcz.github.io/alaphazero-style-go/web/). Or you could
+try earlier checkpoints where the network is still evolving.
+([iteration 004](https://slcz.github.io/alaphazero-style-go/web/?net=https%3A%2F%2Fhuggingface.co%2Fchriszhang01%2Fgonet%2Fresolve%2Fmain%2Fweb%2Fit004%2Fnet-%7Bb%7D.onnx),
+[iteration 010](https://huggingface.co/chriszhang01/gonet/commit/106159d150f355af45ed5f4185a89620f1814438),
+[iteration 023](https://huggingface.co/chriszhang01/gonet/commit/79d3e3afb5cc14b11c0bb8ff13846d92ac4fb85d)).
 
 Like Alpha zero, the network has a value head that outputs a board
 value and policy head that outputs the probability distribution over
