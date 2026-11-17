@@ -53,7 +53,7 @@ The same $\bar{\pi}$ is the policy-head training target, the distribution
 sampled during MCTS descent, and the played move. This has a useful
 property: there is no Dirichlet noise, no temperature, no visit-count
 target, no hand-crafted exploration tricks and much less hyper-parameters to tune.
-Because $\bar{\pi}$ is computeddirectly from Q-values, it also works well with
+Because $\bar{\pi}$ is computed directly from Q-values, it also works well with
 play-out cap randomization and the fast plies that use a small search budget. 
 AlphaZero instead uses visit counts to estimate Q-values, which requires large
 number of simulations to approximate $\bar{\pi}$.
@@ -61,7 +61,7 @@ number of simulations to approximate $\bar{\pi}$.
 
 Also borrowed from KataGo idea, the network has a few extra auxiliary training
 head. Notably the ownership territory map and score difference.
-Terminal state is scored and labeled using Tromp-tylor rules. This implies
+Terminal state is scored and labeled using Tromp-taylor rules. This implies
 that the selfplay has to up capture the dead stones before passes.
 To train the engine to pass clean and to provide an accurate end of game
 ownership and scoring lables for the loss heads, the MCTS utility function
@@ -139,5 +139,5 @@ python scripts/batch_match.sh --ckpt-a a.pt --ckpt-b b.pt --games 50 \
 ```
 
 The engine support GTP protocol. It can connect to any GTP compatible interface
-(e.g. Sabaki) to match agains human player or another bot. Check scripts/gtp.sh
+(e.g. Sabaki) to match against human player or another bot. Check scripts/gtp.sh
 for configuration details.
