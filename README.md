@@ -1,5 +1,9 @@
 # A self-play Go AI
 
+<p align="center">
+  <img src="snapshot.png" alt="gogui in Sabaki" width="900">
+</p>
+
 An AlphaZero-style go engine that improves by playing against itself.
 The engine is built around a small 8-layer transformer neural network
 (~6.7M parameters). The engine is trying to be simple to understand
